@@ -7,10 +7,12 @@ import hashlib
 import sys
 import types
 
-for name in ("tkinter", "tkinter.font", "PIL", "PIL.Image", "PIL.ImageTk"):
+for name in ("tkinter", "tkinter.font", "PIL", "PIL.Image", "PIL.ImageDraw",
+             "PIL.ImageTk"):
     sys.modules.setdefault(name, types.ModuleType(name))
 
-from triolfm import HOLD, elapsed, fit, marquee_step, parse_body, pkce
+from triolfm import (HOLD, corner_rows, elapsed, fit, fmt, marquee_step,
+                     parse_body, pkce)
 
 
 class FakeFont:
@@ -70,6 +72,31 @@ def test_elapsed():
     assert elapsed(5000, 10.0, 60000, True, 12.0) == 7000
     # never runs past the track end
     assert elapsed(5000, 10.0, 6000, True, 99.0) == 6000
+
+
+def test_fmt():
+    assert fmt(0) == "0:00"
+    assert fmt(102000) == "1:42"        # the scrubber's left-hand label
+    assert fmt(240000) == "4:00"
+    assert fmt(9000) == "0:09"          # seconds always two digits
+    assert fmt(-5) == "0:00"            # clamped, never "-1:59"
+    assert fmt(3600000) == "60:00"      # minutes just keep counting
+
+
+def test_corner_rows():
+    w, h, r = 40, 20, 6
+    rows = corner_rows(w, h, r)
+    # every rectangle stays inside the window
+    for x, y, rw, rh in rows:
+        assert 0 <= x and x + rw <= w and 0 <= y and y + rh <= h, (x, y, rw, rh)
+    # the straight middle spans the full width; corner rows are inset
+    assert (0, r, w, h - 2 * r) in rows
+    widths = {y: rw for x, y, rw, rh in rows if rh == 1}
+    assert widths[0] < widths[r - 1] <= w                # curve opens outward
+    assert widths[0] == widths[h - 1]                    # top/bottom symmetric
+    # degenerate radii don't produce negative or overlapping geometry
+    assert corner_rows(10, 10, 0) == [(0, 0, 10, 10)]
+    assert all(rw > 0 and rh > 0 for _, _, rw, rh in corner_rows(8, 8, 99))
 
 
 if __name__ == "__main__":

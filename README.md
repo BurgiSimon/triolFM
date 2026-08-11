@@ -1,10 +1,11 @@
 # triolFM
 
 A tiny always-on-top Spotify remote. It does **not** play audio and does not replace the
-Spotify desktop app — it drives whatever device your Spotify app is already playing on,
-and shows cover art, track info and a progress bar in a borderless 340×104 widget.
+Spotify desktop app — it drives whatever device your Spotify app is already playing on.
+A borderless, rounded 372×204 player card in three zones: cover art + metadata + quick
+actions on top, transport in the middle, scrubber and utility toolbar below.
 
-One file, ~500 lines, stdlib only except Pillow (JPEG cover art decoding).
+One file, ~1000 lines, stdlib only except Pillow (cover art decoding and rounding).
 
 ## Install
 
@@ -75,14 +76,24 @@ the .deb.
 
 | Action | How |
 |---|---|
-| Play / pause, prev, next | the three glyphs |
-| Seek | click the progress bar |
-| Volume | scroll anywhere on the widget |
-| Move | drag anywhere |
-| Settings | the ⚙ icon (or right-click) |
-| Quit | the × icon (or right-click) |
+| Play / pause | the white disc |
+| Prev, next | ◀◀ / ▶▶ |
+| Shuffle | ⇄ — green when on |
+| Repeat | ↻ — off, whole context, then ↻¹ for one track |
+| Like / unlike | ♥ — green when the track is in your library |
+| Add to a playlist | ✚ — appends to a private playlist called *triolFM*, created on first use |
+| Show the queue | ≡ — the next 8 items, click to close |
+| Seek | drag the orange scrubber; the seek fires on release |
+| Volume | drag the white level bar, or scroll anywhere on the widget |
+| Lyrics | ♫ — opens a Genius search for the track (the Web API has no lyrics) |
+| Open the playlist / album | ▤ — opens the playing context in your browser |
+| Switch device | ▭ — lists Spotify Connect devices, click one to move playback |
+| Expand / shrink | ⇲ — 1.6× the saved size and back |
+| Move | drag anywhere outside the sliders |
+| Settings, expand, quit | right-click anywhere |
 
-Window position, refresh rate and size are remembered in the config file.
+Window position, refresh rate and size are remembered in the config file. There is no
+title bar and no × — right-click is the way out.
 
 ## Settings
 
@@ -91,7 +102,7 @@ Window position, refresh rate and size are remembered in the config file.
 - **Refresh rate** — 1–30s between `/me/player` polls. Default 3s ≈ 20 req/min,
   comfortably under Spotify's rolling limit. The progress bar is interpolated locally
   between polls, so even 30s still gives a smoothly moving bar — only track changes lag.
-- **Widget size** — 50–250% of the 340×104 default. Fonts, art and spacing all scale;
+- **Widget size** — 50–250% of the 372×204 default. Fonts, art and spacing all scale;
   the widget is rebuilt in place, no restart.
 - **Scroll long titles** — on by default. A title too wide for the widget slides
   back and forth instead of being cut off with an ellipsis. Off restores the ellipsis.
@@ -100,8 +111,16 @@ Window position, refresh rate and size are remembered in the config file.
 
 ## Notes
 
-- **Spotify Premium is required** for play/pause/skip/seek/volume — a Web API
-  restriction, not this app. Free accounts still get live track info and cover art.
+- **Spotify Premium is required** for play/pause/skip/seek/volume/shuffle/repeat and
+  device switching — a Web API restriction, not this app. Free accounts still get live
+  track info, cover art, likes, playlist adds and the queue view.
+- Liking and playlist adds need library and playlist scopes. Upgrading from an older
+  version re-runs the browser authorization once, because Spotify won't widen the scopes
+  of an existing refresh token.
+- Local files can't be liked or added to a playlist (they have no Spotify id) — the
+  widget says `local file` instead.
+- Rounded window corners use the X11 SHAPE extension; where it's unavailable the corners
+  are simply square.
 - Status line shows `nothing playing`, `no active device`, `premium required` or
   `offline` when something is up.
 
