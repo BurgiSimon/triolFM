@@ -6,6 +6,7 @@ your Spotify app is already playing on.
 """
 
 import base64
+import colorsys
 import ctypes
 import hashlib
 import http.server
@@ -34,6 +35,45 @@ SCROLL_MS, HOLD = 60, 12   # marquee: 1px per 60ms, ~0.7s pause at each end
 W, H, ART, PAD = 340, 104, 76, 8  # at scale 1.0; settings scales these
 
 BG, FG, DIM, ACCENT = "#121212", "#ffffff", "#8a8a8a", "#1db954"
+SURFACE = "#2a2a2a"   # art placeholder / progress trough
+
+
+# ------------------------------------------------------------------- colors
+
+def dominant(img):
+    """(r, g, b) of the color a person would name when shown `img`.
+
+    The mean pixel of album art is nearly always mud, so quantize instead and
+    score palette entries by area × saturation, penalizing near-black and
+    near-white — those cover most of the frame but read as "no color".
+    """
+    pal = img.convert("RGB").resize((64, 64)).quantize(colors=8)
+    raw, best, top = pal.getpalette(), (110, 110, 110), -1.0
+    for count, i in pal.getcolors():
+        rgb = tuple(raw[i * 3:i * 3 + 3])
+        _, l, s = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+        score = count * (s ** 2 + 0.02) * max(0.0, 1 - abs(l - 0.5) * 1.7)
+        if score > top:
+            best, top = rgb, score
+    return best
+
+
+def shade(rgb, light, smin=0.0, smax=1.0):
+    """`rgb`'s hue at lightness `light`, saturation clamped to [smin, smax]."""
+    h, _, s = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+    if s > 0.08:  # a near-gray cover has no hue worth boosting — stay neutral
+        s = max(smin, min(smax, s))
+    out = colorsys.hls_to_rgb(h, light, s)
+    return "#%02x%02x%02x" % tuple(round(c * 255) for c in out)
+
+
+def theme(rgb):
+    """(bg, surface, accent) for an album color, or the defaults for None."""
+    if rgb is None:
+        return BG, SURFACE, ACCENT
+    return (shade(rgb, 0.07, 0, 0.55),   # background: barely-there tint
+            shade(rgb, 0.17, 0, 0.40),
+            shade(rgb, 0.48, 0.55))      # accent: forced vivid, always legible
 
 
 # ---------------------------------------------------------------- auth / api
@@ -278,6 +318,7 @@ class Widget:
         self._year = ""
         self._shown = None         # self.info currently in the labels
         self._job = None           # pending marquee callback
+        self.bg, self.surface, self.accent = theme(None)
         self._build()
 
     # -- ui ---------------------------------------------------------------
@@ -293,7 +334,7 @@ class Widget:
         self._dims()
         r = self.root = tk.Tk()
         r.title("triolFM")
-        r.configure(bg=BG)
+        r.configure(bg=self.bg)
         r.geometry(f"{self.W}x{self.H}")
         frameless(r)  # after geometry: the remap shouldn't move the widget
         r.attributes("-topmost", True)
@@ -319,6 +360,7 @@ class Widget:
         """Everything sized by self.scale. Torn down and re-run on rescale."""
         s = self.scale
         W, H, ART, PAD = self.W, self.H, self.ART, self.PAD
+        BG, ACCENT = self.bg, self.accent  # album-tinted; shadow the defaults
         body = self.body = tk.Frame(self.root, bg=BG)
         body.place(x=0, y=0, relwidth=1, relheight=1)
 
@@ -341,7 +383,7 @@ class Widget:
         H = self.H = max(H, cy + ico + bh + round(8 * s))
         self.root.geometry(f"{W}x{H}")
 
-        self.art = tk.Label(body, bg="#1e1e1e", bd=0)
+        self.art = tk.Label(body, bg=self.surface, bd=0)
         self.art.place(x=PAD, y=(H - bh - ART) // 2, width=ART, height=ART)
         if self._art_img:
             self._art_ref = ImageTk.PhotoImage(
@@ -385,14 +427,14 @@ class Widget:
             icon.bind("<Enter>", lambda e, w=icon: w.config(fg=FG))
             icon.bind("<Leave>", lambda e, w=icon: w.config(fg="#3a3a3a"))
 
-        self.bar = tk.Canvas(body, bg="#2a2a2a", height=bh, bd=0,
+        self.bar = tk.Canvas(body, bg=self.surface, height=bh, bd=0,
                              highlightthickness=0, cursor="hand2")
         self.bar.place(x=0, y=H - bh, width=W)
         self.fill = self.bar.create_rectangle(0, 0, 0, bh, fill=ACCENT, width=0)
         self.bar.bind("<Button-1>", self.seek)
         self._bh = bh
 
-        self.menu = tk.Menu(body, tearoff=0, bg="#1e1e1e", fg=FG, bd=0,
+        self.menu = tk.Menu(body, tearoff=0, bg=self.surface, fg=FG, bd=0,
                             activebackground=ACCENT, activeforeground="#000")
         self.menu.add_command(label="Settings", command=self.settings)
         self.menu.add_separator()
@@ -432,6 +474,7 @@ class Widget:
         if self.win and self.win.winfo_exists():
             self.win.lift()
             return
+        BG, ACCENT = self.bg, self.accent
         w = self.win = tk.Toplevel(self.root)
         w.title("triolFM settings")
         w.configure(bg=BG)
@@ -443,7 +486,7 @@ class Widget:
                 fill="x", padx=12, pady=(10, 0))
             sc = tk.Scale(w, from_=lo, to=hi, resolution=res, variable=var,
                           orient="horizontal", length=240, bg=BG, fg=FG,
-                          troughcolor="#2a2a2a", highlightthickness=0, bd=0,
+                          troughcolor=self.surface, highlightthickness=0, bd=0,
                           activebackground=ACCENT)
             sc.pack(fill="x", padx=12, pady=(0, 6))
             # commit on release, not on every pixel of the drag
@@ -452,7 +495,7 @@ class Widget:
                           ("Show release year", self.year)):
             tk.Checkbutton(w, text=text, variable=var, command=self.set_flags,
                            bg=BG, fg=DIM, activebackground=BG,
-                           activeforeground=FG, selectcolor="#2a2a2a",
+                           activeforeground=FG, selectcolor=self.surface,
                            highlightthickness=0, bd=0, anchor="w").pack(
                 fill="x", padx=8, pady=(0, 4))
 
@@ -575,6 +618,29 @@ class Widget:
     def render_play(self):
         self.btns["play"].config(text="❚❚" if self.playing else "▶")
 
+    def recolor(self, rgb):
+        """Repaint the live widget tree in the current album's color."""
+        colors = theme(rgb)
+        if colors == (self.bg, self.surface, self.accent):
+            return
+        self.bg, self.surface, self.accent = colors
+        self.root.config(bg=self.bg)
+
+        def walk(w):
+            for c in w.winfo_children():
+                if c is not self.art and c is not self.bar:
+                    try:
+                        c.config(bg=self.bg)
+                    except tk.TclError:
+                        pass  # not every widget takes -bg (e.g. Menu entries)
+                walk(c)
+
+        walk(self.root)
+        self.art.config(bg=self.surface)
+        self.bar.config(bg=self.surface)
+        self.bar.itemconfig(self.fill, fill=self.accent)
+        self.menu.config(bg=self.surface, activebackground=self.accent)
+
     def apply(self, d):
         if not d or not d.get("item"):
             self.track, self.playing, self.msg = None, False, "nothing playing"
@@ -619,6 +685,7 @@ class Widget:
                 self._art_ref = ImageTk.PhotoImage(
                     self._art_img.resize((self.ART, self.ART), Image.LANCZOS))
                 self.art.config(image=self._art_ref)
+                self.recolor(dominant(self._art_img))
 
         if self.msg:
             self.info, self._year = (self.msg, ""), ""
@@ -627,6 +694,7 @@ class Widget:
                 self._text()
             self.art.config(image="")
             self._art_ref = self._art_img = self.art_url = None
+            self.recolor(None)
         self.render_play()
         frac = self.now() / self.dur if self.track else 0
         self.bar.coords(self.fill, 0, 0, self.W * frac, self._bh)
