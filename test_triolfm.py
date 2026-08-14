@@ -10,7 +10,8 @@ import types
 for name in ("tkinter", "tkinter.font", "PIL", "PIL.Image", "PIL.ImageTk"):
     sys.modules.setdefault(name, types.ModuleType(name))
 
-from triolfm import HOLD, elapsed, fit, marquee_step, parse_body, pkce
+from triolfm import (ACCENT, BG, HOLD, dominant, elapsed, fit, marquee_step,
+                     parse_body, pkce, shade, theme)
 
 
 class FakeFont:
@@ -70,6 +71,34 @@ def test_elapsed():
     assert elapsed(5000, 10.0, 60000, True, 12.0) == 7000
     # never runs past the track end
     assert elapsed(5000, 10.0, 6000, True, 99.0) == 6000
+
+
+def test_shade():
+    assert shade((255, 0, 0), 0.5) == "#ff0000"          # hue kept, mid light
+    assert shade((255, 0, 0), 0.0) == "#000000"
+    assert shade((255, 0, 0), 0.5, 0.0, 0.0) == "#808080"  # saturation capped
+    # gray has no hue, so forcing saturation up must not invent one
+    assert shade((128, 128, 128), 0.5, 0.55) == "#808080"
+
+
+def test_theme():
+    assert theme(None) == (BG, "#2a2a2a", ACCENT)
+    bg, surface, accent = theme((255, 0, 0))
+    # background stays a dark tint, accent stays bright enough to see
+    assert bg < surface < accent, (bg, surface, accent)
+    assert accent.startswith("#f") or accent.startswith("#e"), accent
+
+
+def test_dominant():
+    from PIL import Image
+    if not hasattr(Image, "new"):
+        return  # PIL stubbed out in this environment; shade/theme cover the math
+    img = Image.new("RGB", (64, 64), (0, 0, 0))
+    img.paste(Image.new("RGB", (16, 16), (200, 30, 30)), (0, 0))
+    r, g, b = dominant(img)
+    assert r > 120 and g < 90 and b < 90, (r, g, b)  # the red patch, not the black
+    # an all-black cover has no color to find: falls back to neutral gray
+    assert dominant(Image.new("RGB", (64, 64), (0, 0, 0))) == (110, 110, 110)
 
 
 if __name__ == "__main__":
