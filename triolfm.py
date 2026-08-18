@@ -18,6 +18,7 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font
+import tkinter.simpledialog
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +32,7 @@ REDIRECT = "http://127.0.0.1:8888/callback"
 SCOPES = "user-read-playback-state user-modify-playback-state"
 POLL = 3.0            # seconds between /me/player reads; overridable in config
 SCROLL_MS, HOLD = 60, 12   # marquee: 1px per 60ms, ~0.7s pause at each end
+FADE, FADE_MS = 8, 40      # recolor crossfade: 8 steps of 40ms
 
 W, H, ART, PAD = 340, 104, 76, 8  # at scale 1.0; settings scales these
 
@@ -65,6 +67,13 @@ def shade(rgb, light, smin=0.0, smax=1.0):
         s = max(smin, min(smax, s))
     out = colorsys.hls_to_rgb(h, light, s)
     return "#%02x%02x%02x" % tuple(round(c * 255) for c in out)
+
+
+def mix(a, b, t):
+    """The hex color `t` of the way from hex `a` to hex `b`."""
+    return "#%02x%02x%02x" % tuple(
+        round(int(a[i:i + 2], 16) * (1 - t) + int(b[i:i + 2], 16) * t)
+        for i in (1, 3, 5))
 
 
 def theme(rgb):
@@ -127,10 +136,12 @@ def _catch_code(url, state):
     while not got:
         srv.handle_request()  # favicon etc. leave `got` empty, so we loop
     srv.server_close()
+    # RuntimeError, not SystemExit: this runs in a worker thread, where
+    # SystemExit just ends the thread and nobody hears about it
     if got.get("state") != state:
-        raise SystemExit("OAuth state mismatch — aborting.")
+        raise RuntimeError("OAuth state mismatch")
     if "code" not in got:
-        raise SystemExit("Auth failed: " + got.get("error", "unknown"))
+        raise RuntimeError("auth failed: " + got.get("error", "unknown"))
     return got["code"]
 
 
@@ -278,6 +289,19 @@ def elapsed(pos, stamp, dur, playing, t):
     return min(dur, pos + (t - stamp) * 1000 if playing else pos)
 
 
+def mmss(ms):
+    """`ms` as m:ss."""
+    s = max(0, int(ms)) // 1000
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def backoff(fails, poll, retry_after=None):
+    """Seconds until the next poll after `fails` consecutive errors."""
+    if retry_after:
+        return float(retry_after)
+    return poll if not fails else min(60.0, poll * 2 ** fails)
+
+
 def fit(font, text, px):
     """Ellipsize `text` to fit `px` pixels."""
     if font.measure(text) <= px:
@@ -318,7 +342,9 @@ class Widget:
         self._year = ""
         self._shown = None         # self.info currently in the labels
         self._job = None           # pending marquee callback
-        self.bg, self.surface, self.accent = theme(None)
+        self._vol_job = None       # pending volume PUT
+        self.bg, self.surface, self.accent = self._target = theme(None)
+        self._fade = None          # pending crossfade callback
         self._build()
 
     # -- ui ---------------------------------------------------------------
@@ -427,6 +453,11 @@ class Widget:
             icon.bind("<Enter>", lambda e, w=icon: w.config(fg=FG))
             icon.bind("<Leave>", lambda e, w=icon: w.config(fg="#3a3a3a"))
 
+        self.lbl_time = tk.Label(body, bg=BG, fg=DIM, bd=0, pady=0,
+                                 highlightthickness=0, font=self.f_sub,
+                                 anchor="e")
+        self.lbl_time.place(x=W - PAD, y=cy + (ico - sh) // 2, anchor="ne")
+
         self.bar = tk.Canvas(body, bg=self.surface, height=bh, bd=0,
                              highlightthickness=0, cursor="hand2")
         self.bar.place(x=0, y=H - bh, width=W)
@@ -440,7 +471,8 @@ class Widget:
         self.menu.add_separator()
         self.menu.add_command(label="Quit", command=self.quit)
 
-        for w in (body, self.art, clip, self.lbl_title, self.lbl_artist, ctl):
+        for w in (body, self.art, clip, self.lbl_title, self.lbl_artist, ctl,
+                  self.lbl_time):
             w.bind("<Button-1>", self.grab)
             w.bind("<B1-Motion>", self.drag)
             w.bind("<Button-3>",
@@ -567,7 +599,16 @@ class Widget:
             self.render_play()
         elif key.startswith("vol"):
             self.volume = max(0, min(100, self.volume + (5 if key == "vol+" else -5)))
+            # one PUT per burst of wheel notches, not one per notch
+            if self._vol_job:
+                self.root.after_cancel(self._vol_job)
+            self._vol_job = self.root.after(200, self._flush_vol)
+            return
         threading.Thread(target=self._do, args=(key, arg), daemon=True).start()
+
+    def _flush_vol(self):
+        self._vol_job = None
+        threading.Thread(target=self._do, args=("vol", None), daemon=True).start()
 
     def _do(self, key, arg):
         try:
@@ -587,17 +628,27 @@ class Widget:
                         else f"http {e.code}"))
         except OSError:
             self.q.put(("err", "offline"))
+        except Exception as e:
+            self.q.put(("err", str(e)[:40] or type(e).__name__))
         self.wake.set()
 
     def poller(self):
+        fails = 0
         while True:
+            wait = self.poll
             try:
                 self.q.put(("state", self.sp.call("GET", "/me/player")))
+                fails = 0
             except urllib.error.HTTPError as e:
+                fails += 1
                 self.q.put(("err", f"http {e.code}"))
-            except OSError:
-                self.q.put(("err", "offline"))
-            self.wake.wait(self.poll)  # actions and rate changes wake us early
+                wait = backoff(fails, self.poll, e.headers.get("Retry-After"))
+            except Exception as e:  # incl. a failed re-auth: report, never die
+                fails += 1
+                self.q.put(("err", "offline" if isinstance(e, OSError)
+                            else str(e)[:40] or type(e).__name__))
+                wait = backoff(fails, self.poll)
+            self.wake.wait(wait)  # actions and rate changes wake us early
             self.wake.clear()
 
     def fetch_art(self, url):
@@ -619,11 +670,22 @@ class Widget:
         self.btns["play"].config(text="❚❚" if self.playing else "▶")
 
     def recolor(self, rgb):
-        """Repaint the live widget tree in the current album's color."""
-        colors = theme(rgb)
-        if colors == (self.bg, self.surface, self.accent):
+        """Fade the live widget tree to the current album's color."""
+        target = theme(rgb)
+        if target == self._target:
             return
-        self.bg, self.surface, self.accent = colors
+        if self._fade:
+            self.root.after_cancel(self._fade)
+        self._target, start = target, (self.bg, self.surface, self.accent)
+
+        def step(i=1):
+            self._paint(*(mix(a, b, i / FADE) for a, b in zip(start, target)))
+            self._fade = self.root.after(FADE_MS, step, i + 1) if i < FADE else None
+
+        step()
+
+    def _paint(self, bg, surface, accent):
+        self.bg, self.surface, self.accent = bg, surface, accent
         self.root.config(bg=self.bg)
 
         def walk(w):
@@ -650,7 +712,9 @@ class Widget:
         self.dur = max(1, it.get("duration_ms", 1))
         self.pos = d.get("progress_ms") or 0
         self.stamp = time.monotonic()
-        self.volume = (d.get("device") or {}).get("volume_percent") or self.volume
+        if not self._vol_job:  # don't clobber a scroll we haven't sent yet
+            self.volume = ((d.get("device") or {}).get("volume_percent")
+                           or self.volume)
         self.msg = None
         self.track = it.get("id") or it.get("uri") or it.get("name")  # local: no id
         alb = it.get("album") or {}
@@ -696,11 +760,25 @@ class Widget:
             self._art_ref = self._art_img = self.art_url = None
             self.recolor(None)
         self.render_play()
+        self.lbl_time.config(
+            text=f"{mmss(self.now())} / {mmss(self.dur)}" if self.track else "")
         frac = self.now() / self.dur if self.track else 0
         self.bar.coords(self.fill, 0, 0, self.W * frac, self._bh)
         self.root.after(250, self.tick)
 
     def run(self):
+        cfg = self.sp.cfg
+        if not (cfg.get("refresh") or cfg.get("client_id")
+                or os.environ.get("SPOTIFY_CLIENT_ID")):
+            # ask here, on the main thread: login() runs in the poller thread,
+            # where input() has no terminal under a .desktop launch
+            self.root.attributes("-topmost", False)  # else we cover the dialog
+            cid = tkinter.simpledialog.askstring(
+                "triolFM", "Spotify Client ID:", parent=self.root)
+            self.root.attributes("-topmost", True)
+            if cid and cid.strip():
+                cfg["client_id"] = cid.strip()
+                save_cfg(cfg)
         threading.Thread(target=self.poller, daemon=True).start()
         self.root.after(100, self.tick)
         self.root.mainloop()

@@ -2,7 +2,8 @@
 
 A tiny always-on-top Spotify remote. It does **not** play audio and does not replace the
 Spotify desktop app — it drives whatever device your Spotify app is already playing on,
-and shows cover art, track info and a progress bar in a borderless 340×104 widget.
+and shows cover art, track info, elapsed/total time and a progress bar in a borderless
+340×104 widget.
 
 One file, ~500 lines, stdlib only except Pillow (JPEG cover art decoding).
 
@@ -89,7 +90,9 @@ Window position, refresh rate and size are remembered in the config file.
 ⚙ opens two sliders (applied on release) and two toggles:
 
 - **Refresh rate** — 1–30s between `/me/player` polls. Default 3s ≈ 20 req/min,
-  comfortably under Spotify's rolling limit. The progress bar is interpolated locally
+  comfortably under Spotify's rolling limit. On errors the poll backs off exponentially
+  (capped at 60s, or whatever `Retry-After` asks for) and resumes the moment you touch a
+  control. The progress bar is interpolated locally
   between polls, so even 30s still gives a smoothly moving bar — only track changes lag.
 - **Widget size** — 50–250% of the 340×104 default. Fonts, art and spacing all scale;
   the widget is rebuilt in place, no restart.
@@ -104,6 +107,7 @@ Window position, refresh rate and size are remembered in the config file.
   restriction, not this app. Free accounts still get live track info and cover art.
 - Status line shows `nothing playing`, `no active device`, `premium required` or
   `offline` when something is up.
+- The UI tints itself to the dominant color of the current cover, crossfading over ~0.3s.
 
 ### Windows Start Menu shortcut
 

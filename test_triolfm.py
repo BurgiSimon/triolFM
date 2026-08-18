@@ -7,11 +7,13 @@ import hashlib
 import sys
 import types
 
-for name in ("tkinter", "tkinter.font", "PIL", "PIL.Image", "PIL.ImageTk"):
+for name in ("tkinter", "tkinter.font", "tkinter.simpledialog", "PIL",
+             "PIL.Image", "PIL.ImageTk"):
     sys.modules.setdefault(name, types.ModuleType(name))
 
-from triolfm import (ACCENT, BG, HOLD, dominant, elapsed, fit, marquee_step,
-                     parse_body, pkce, shade, theme)
+from triolfm import (ACCENT, BG, HOLD, backoff, dominant, elapsed, fit,
+                     marquee_step, mix, mmss, parse_body, pkce, shade,
+                     theme)
 
 
 class FakeFont:
@@ -99,6 +101,30 @@ def test_dominant():
     assert r > 120 and g < 90 and b < 90, (r, g, b)  # the red patch, not the black
     # an all-black cover has no color to find: falls back to neutral gray
     assert dominant(Image.new("RGB", (64, 64), (0, 0, 0))) == (110, 110, 110)
+
+
+def test_mmss():
+    assert mmss(0) == "0:00"
+    assert mmss(-5) == "0:00"            # a clock that never runs backwards
+    assert mmss(59_999) == "0:59"        # truncates, so it never shows 1:00 early
+    assert mmss(60_000) == "1:00"
+    assert mmss(3_723_000) == "62:03"    # long podcasts stay in minutes
+
+
+def test_mix():
+    assert mix("#000000", "#ffffff", 0.0) == "#000000"
+    assert mix("#000000", "#ffffff", 1.0) == "#ffffff"   # lands exactly on target
+    assert mix("#000000", "#ffffff", 0.5) == "#808080"
+    assert mix("#1db954", "#1db954", 0.4) == "#1db954"   # no drift when equal
+
+
+def test_backoff():
+    assert backoff(0, 3.0) == 3.0                 # healthy: the configured rate
+    assert backoff(1, 3.0) == 6.0
+    assert backoff(3, 3.0) == 24.0
+    assert backoff(9, 3.0) == 60.0                # capped, not 25 minutes
+    assert backoff(4, 3.0, "7") == 7.0            # Retry-After wins
+    assert backoff(4, 3.0, None) == 48.0
 
 
 if __name__ == "__main__":
