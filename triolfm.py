@@ -14,10 +14,12 @@ import json
 import os
 import queue
 import secrets
+import sys
 import threading
 import time
 import tkinter as tk
 import tkinter.font
+import tkinter.messagebox
 import tkinter.simpledialog
 import urllib.error
 import urllib.parse
@@ -27,10 +29,14 @@ from io import BytesIO
 
 from PIL import Image, ImageTk
 
+__version__ = "1.0.0"
+
 CFG_PATH = os.path.expanduser("~/.config/triolfm/config.json")
 REDIRECT = "http://127.0.0.1:8888/callback"
 SCOPES = "user-read-playback-state user-modify-playback-state"
 POLL = 3.0            # seconds between /me/player reads; overridable in config
+AUTH_TIMEOUT = 300.0  # give up waiting for the OAuth callback after 5 min
+FAST_POLL, FAST_POLLS = 0.5, 2   # re-checks after a control press, see backoff
 SCROLL_MS, HOLD = 60, 12   # marquee: 1px per 60ms, ~0.7s pause at each end
 FADE, FADE_MS = 8, 40      # recolor crossfade: 8 steps of 40ms
 
@@ -96,10 +102,27 @@ def load_cfg():
 
 
 def save_cfg(cfg):
+    """Write the config atomically.
+
+    It holds the refresh token, so a crash mid-write costs the user a full
+    re-login. 0600 from creation, so the token is never briefly world-readable.
+    """
     os.makedirs(os.path.dirname(CFG_PATH), exist_ok=True)
-    with open(CFG_PATH, "w") as f:
+    tmp = CFG_PATH + ".tmp"
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+                   "w") as f:
         json.dump(cfg, f)
-    os.chmod(CFG_PATH, 0o600)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, CFG_PATH)
+
+
+class AuthError(RuntimeError):
+    """A setup problem the user has to fix, and can.
+
+    Raised instead of a bare error so the widget knows to show a dialog: these
+    messages don't fit the status line, and a truncated one helps nobody.
+    """
 
 
 def _post_token(data):
@@ -130,18 +153,38 @@ def _catch_code(url, state):
         def log_message(self, *a):
             pass
 
-    srv = http.server.HTTPServer(("127.0.0.1", 8888), H)
+    try:
+        srv = http.server.HTTPServer(("127.0.0.1", 8888), H)
+    except OSError:
+        raise AuthError(
+            "triolFM needs port 8888 to finish the Spotify login, and "
+            "something else is using it.\n\nClose that program (another copy "
+            "of triolFM?) and try again.") from None
+    srv.timeout = 1  # so the wait below can give up instead of hanging forever
     webbrowser.open(url)
     print("If no browser opened, visit:\n" + url)
-    while not got:
-        srv.handle_request()  # favicon etc. leave `got` empty, so we loop
-    srv.server_close()
-    # RuntimeError, not SystemExit: this runs in a worker thread, where
-    # SystemExit just ends the thread and nobody hears about it
+    # AuthError, not SystemExit: this runs in a worker thread, where SystemExit
+    # just ends the thread and nobody hears about it
+    try:
+        deadline = time.monotonic() + AUTH_TIMEOUT
+        while not got:
+            if time.monotonic() > deadline:
+                raise AuthError(
+                    "Spotify never sent the login back to triolFM.\n\n"
+                    "Check that your Client ID is correct, and that your app's "
+                    "redirect URI is exactly:\n" + REDIRECT +
+                    "\n\n(127.0.0.1, not localhost — Spotify rejects that.)\n\n"
+                    "Fix it, then use \u2699 \u2192 Reconnect to Spotify.")
+            srv.handle_request()  # favicon etc. leave `got` empty, so we loop
+    finally:
+        srv.server_close()  # always free the port, even on timeout
     if got.get("state") != state:
-        raise RuntimeError("OAuth state mismatch")
+        raise AuthError("The Spotify login came back mismatched and was "
+                        "discarded. Try connecting again.")
     if "code" not in got:
-        raise RuntimeError("auth failed: " + got.get("error", "unknown"))
+        raise AuthError("Spotify refused the login: " +
+                        got.get("error", "unknown") +
+                        "\n\nUse \u2699 \u2192 Reconnect to Spotify to retry.")
     return got["code"]
 
 
@@ -161,10 +204,24 @@ def pkce():
     return verifier, challenge
 
 
-def login(cfg):
-    """PKCE authorization-code flow. Returns (access_token, expiry_epoch)."""
+def login(cfg, ask):
+    """PKCE authorization-code flow. Returns (access_token, expiry_epoch).
+
+    `ask` supplies a Client ID when the config has none. It is a callback
+    because this runs in the poller thread, where input() has no terminal
+    under a .desktop launch — the widget hands us a main-thread dialog.
+    """
     cid = (cfg.get("client_id") or os.environ.get("SPOTIFY_CLIENT_ID")
-           or input("Spotify Client ID: ").strip())
+           or ask() or "").strip()
+    if not cid:
+        raise AuthError(
+            "triolFM needs a Spotify Client ID before it can connect.\n\n"
+            "1. Open https://developer.spotify.com/dashboard and create an "
+            "app.\n"
+            "2. Tick Web API, and add this redirect URI exactly:\n"
+            "   " + REDIRECT + "\n"
+            "3. Copy the Client ID.\n\n"
+            "Then use \u2699 \u2192 Reconnect to Spotify and paste it in.")
     verifier, challenge = pkce()
     state = secrets.token_urlsafe(16)
     url = "https://accounts.spotify.com/authorize?" + urllib.parse.urlencode({
@@ -173,10 +230,18 @@ def login(cfg):
         "code_challenge_method": "S256", "code_challenge": challenge,
     })
     code = _catch_code(url, state)
-    tok = _post_token({
-        "grant_type": "authorization_code", "code": code,
-        "redirect_uri": REDIRECT, "client_id": cid, "code_verifier": verifier,
-    })
+    try:
+        tok = _post_token({
+            "grant_type": "authorization_code", "code": code,
+            "redirect_uri": REDIRECT, "client_id": cid,
+            "code_verifier": verifier,
+        })
+    except urllib.error.HTTPError as e:
+        raise AuthError(
+            "Spotify rejected the login (HTTP %d).\n\nCheck that the Client "
+            "ID is right and that the redirect URI on your app is exactly:\n%s"
+            "\n\nThen use \u2699 \u2192 Reconnect to Spotify."
+            % (e.code, REDIRECT)) from e
     cfg["client_id"] = cid
     cfg["refresh"] = tok["refresh_token"]
     save_cfg(cfg)
@@ -184,9 +249,12 @@ def login(cfg):
 
 
 class Spotify:
-    def __init__(self):
+    def __init__(self, ask=None):
         self.cfg = load_cfg()
         self.token, self.exp = None, 0.0
+        # where a Client ID comes from when the config has none; the widget
+        # swaps in a main-thread dialog, since _tok() runs off the main thread
+        self.ask = ask or (lambda: input("Spotify Client ID: "))
 
     def _tok(self):
         if self.token and time.time() < self.exp - 30:
@@ -206,7 +274,7 @@ class Spotify:
                 return self.token
             except urllib.error.HTTPError:
                 self.cfg.pop("refresh", None)  # revoked — fall through to login
-        self.token, self.exp = login(self.cfg)
+        self.token, self.exp = login(self.cfg, self.ask)
         return self.token
 
     def call(self, method, path, **params):
@@ -295,11 +363,21 @@ def mmss(ms):
     return f"{s // 60}:{s % 60:02d}"
 
 
-def backoff(fails, poll, retry_after=None):
-    """Seconds until the next poll after `fails` consecutive errors."""
+def backoff(fails, poll, retry_after=None, urgent=0):
+    """Seconds until the next poll.
+
+    `urgent` counts the fast re-checks still owed after a control press:
+    /me/player reports the previous track for a moment after a skip, so the
+    poll that a press triggers often reads stale. Following it up twice at
+    FAST_POLL catches the real state whatever the configured rate is —
+    otherwise a 30s rate means the title is wrong for 30s. Errors outrank it;
+    a rate-limited server does not want a burst.
+    """
     if retry_after:
         return float(retry_after)
-    return poll if not fails else min(60.0, poll * 2 ** fails)
+    if fails:
+        return min(60.0, poll * 2 ** fails)
+    return min(poll, FAST_POLL) if urgent else poll
 
 
 def fit(font, text, px):
@@ -323,7 +401,7 @@ def marquee_step(x, step, hold, over):
 
 class Widget:
     def __init__(self):
-        self.sp = Spotify()
+        self.sp = Spotify(self.ask_cid)
         self.q = queue.Queue()
         self.wake = threading.Event()
         self.track = None          # current track id
@@ -336,6 +414,9 @@ class Widget:
         self.poll = float(self.sp.cfg.get("poll", POLL))
         self.msg = "connecting…"
         self.alive = True
+        self.urgent = 0            # fast re-polls owed after a press
+        self._declined = False     # user closed the Client ID prompt
+        self._shown_fatal = None   # last setup error already shown in a dialog
         self._art_ref = None
         self._art_img = None       # last PIL image, re-resized on rescale
         self.info = ("", "")       # raw title/artist, re-ellipsized on rescale
@@ -368,7 +449,7 @@ class Widget:
         # land off the usable area on multi-monitor setups and get clamped.
         self.moved = False
         if cfg.get("pos"):
-            r.after(2000, lambda: self.place(*cfg["pos"]))
+            r.after(2000, lambda: self.place(*self.onscreen(*cfg["pos"])))
 
         self.rate = tk.DoubleVar(value=self.poll)
         self.size = tk.IntVar(value=round(self.scale * 100))
@@ -502,6 +583,41 @@ class Widget:
             SCROLL_MS,
             lambda a=marquee_step(x, step, hold, over): self._marquee(*a, over))
 
+    def _modal(self, fn, *a, **kw):
+        """Run a modal dialog with -topmost off, or the widget covers it."""
+        self.root.attributes("-topmost", False)
+        try:
+            return fn(*a, **kw)
+        finally:
+            self.root.attributes("-topmost", True)
+
+    def ask_cid(self):
+        """Get a Client ID from the user. Called by Spotify from the poller
+        thread, so hand the prompt to the main thread and wait for it."""
+        if self._declined:
+            return ""  # asked once and dismissed — don't reopen it every retry
+        box = queue.Queue(1)
+        self.q.put(("ask", box))
+        cid = box.get()  # tick() answers on the main thread
+        self._declined = not cid
+        return cid
+
+    def reconnect(self):
+        """Forget the login so the next poll asks for a Client ID again.
+
+        The only way out of a wrong Client ID or a revoked token that doesn't
+        involve editing ~/.config/triolfm/config.json by hand.
+        """
+        for k in ("client_id", "refresh"):
+            self.sp.cfg.pop(k, None)
+        save_cfg(self.sp.cfg)
+        self.sp.token, self.sp.exp = None, 0.0
+        self._declined, self._shown_fatal = False, None
+        self.msg = "connecting…"
+        if self.win and self.win.winfo_exists():
+            self.win.destroy()
+        self.wake.set()
+
     def settings(self):
         if self.win and self.win.winfo_exists():
             self.win.lift()
@@ -530,6 +646,21 @@ class Widget:
                            activeforeground=FG, selectcolor=self.surface,
                            highlightthickness=0, bd=0, anchor="w").pack(
                 fill="x", padx=8, pady=(0, 4))
+        tk.Button(w, text="Reconnect to Spotify…", command=self.reconnect,
+                  bg=self.surface, fg=FG, activebackground=ACCENT,
+                  activeforeground="#000", highlightthickness=0, bd=0,
+                  relief="flat", cursor="hand2").pack(fill="x", padx=12,
+                                                      pady=(6, 12))
+
+    def onscreen(self, x, y):
+        """Clamp a saved position onto the current screen.
+
+        Monitors get unplugged and resolutions change. A widget restored onto
+        a screen that no longer exists is unreachable: it has no taskbar entry
+        and no tray icon to bring it back.
+        """
+        return (max(0, min(int(x), self.root.winfo_screenwidth() - self.W)),
+                max(0, min(int(y), self.root.winfo_screenheight() - self.H)))
 
     def place(self, x, y, steps=8):
         """Restore the saved position.
@@ -593,6 +724,7 @@ class Widget:
     # -- network ----------------------------------------------------------
 
     def press(self, key, arg=None):
+        self._declined = False  # user is back and wants it working: ask again
         if key == "play":  # optimistic flip, poll will confirm
             self.playing = not self.playing
             self.pos, self.stamp = self.now(), time.monotonic()
@@ -622,6 +754,8 @@ class Widget:
                 self.sp.call("PUT", "/me/player/seek", position_ms=arg)
             elif key.startswith("vol"):
                 self.sp.call("PUT", "/me/player/volume", volume_percent=self.volume)
+        except AuthError as e:
+            self.q.put(("fatal", str(e)))
         except urllib.error.HTTPError as e:
             self.q.put(("err", "premium required" if e.code == 403
                         else "no active device" if e.code == 404
@@ -630,6 +764,9 @@ class Widget:
             self.q.put(("err", "offline"))
         except Exception as e:
             self.q.put(("err", str(e)[:40] or type(e).__name__))
+        if not key.startswith("vol"):
+            # a skip or seek changes what the widget shows; volume doesn't
+            self.urgent = FAST_POLLS
         self.wake.set()
 
     def poller(self):
@@ -639,10 +776,17 @@ class Widget:
             try:
                 self.q.put(("state", self.sp.call("GET", "/me/player")))
                 fails = 0
+                wait = backoff(0, self.poll, urgent=self.urgent)
+                if self.urgent:
+                    self.urgent -= 1
             except urllib.error.HTTPError as e:
                 fails += 1
                 self.q.put(("err", f"http {e.code}"))
                 wait = backoff(fails, self.poll, e.headers.get("Retry-After"))
+            except AuthError as e:
+                fails += 1
+                self.q.put(("fatal", str(e)))
+                wait = backoff(fails, self.poll)
             except Exception as e:  # incl. a failed re-auth: report, never die
                 fails += 1
                 self.q.put(("err", "offline" if isinstance(e, OSError)
@@ -744,6 +888,16 @@ class Widget:
                 self.apply(payload)
             elif kind == "err":
                 self.msg = payload
+            elif kind == "ask":
+                payload.put(self._modal(
+                    tkinter.simpledialog.askstring,
+                    "triolFM", "Spotify Client ID:", parent=self.root) or "")
+            elif kind == "fatal":
+                self.msg = "setup needed"
+                if payload != self._shown_fatal:  # once, not every retry
+                    self._shown_fatal = payload
+                    self._modal(tkinter.messagebox.showerror, "triolFM",
+                                payload, parent=self.root)
             elif kind == "art" and payload[0] == self.art_url:
                 self._art_img = payload[1]
                 self._art_ref = ImageTk.PhotoImage(
@@ -767,22 +921,16 @@ class Widget:
         self.root.after(250, self.tick)
 
     def run(self):
-        cfg = self.sp.cfg
-        if not (cfg.get("refresh") or cfg.get("client_id")
-                or os.environ.get("SPOTIFY_CLIENT_ID")):
-            # ask here, on the main thread: login() runs in the poller thread,
-            # where input() has no terminal under a .desktop launch
-            self.root.attributes("-topmost", False)  # else we cover the dialog
-            cid = tkinter.simpledialog.askstring(
-                "triolFM", "Spotify Client ID:", parent=self.root)
-            self.root.attributes("-topmost", True)
-            if cid and cid.strip():
-                cfg["client_id"] = cid.strip()
-                save_cfg(cfg)
+        # No Client ID prompt here: the poller asks for one when it needs one,
+        # via ask_cid() -> tick(), so a re-auth after a revoked token gets the
+        # same dialog as the first run instead of an input() with no terminal.
         threading.Thread(target=self.poller, daemon=True).start()
         self.root.after(100, self.tick)
         self.root.mainloop()
 
 
 if __name__ == "__main__":
-    Widget().run()
+    if "--version" in sys.argv[1:]:
+        print("triolFM " + __version__)
+    else:
+        Widget().run()

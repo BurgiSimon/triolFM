@@ -1,0 +1,36 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor the .deb declares in Depends, so it has to build there
+        python: ["3.9", "3.11", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # pillow is real here, so test_dominant runs its colour maths instead of
+      # skipping itself against the stub
+      - run: pip install pillow
+      - run: python test_triolfm.py
+      - run: python triolfm.py --version
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./build-deb.sh
+      - run: dpkg-deb --info triolfm_*_all.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: triolfm_*_all.deb
