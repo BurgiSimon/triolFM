@@ -132,6 +132,12 @@ def test_backoff():
     assert backoff(9, 3.0) == 60.0                # capped, not 25 minutes
     assert backoff(4, 3.0, "7") == 7.0            # Retry-After wins
     assert backoff(4, 3.0, None) == 48.0
+    # after a press, re-check fast so a 30s rate doesn't show a stale track
+    assert backoff(0, 30.0, urgent=2) == 0.5
+    assert backoff(0, 30.0, urgent=0) == 30.0     # burst spent: back to normal
+    assert backoff(0, 0.3, urgent=1) == 0.3       # already faster: leave it
+    assert backoff(2, 3.0, urgent=2) == 12.0      # errors outrank the burst
+    assert backoff(0, 30.0, "7", urgent=2) == 7.0  # and so does Retry-After
 
 
 # Real /me/player payload shapes. apply() is the one function fed arbitrary

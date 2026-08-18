@@ -148,7 +148,14 @@ widget can't strand itself out of reach.
   comfortably under Spotify's rolling limit. On errors the poll backs off exponentially
   (capped at 60s, or whatever `Retry-After` asks for) and resumes the moment you touch a
   control. The progress bar is interpolated locally
-  between polls, so even 30s still gives a smoothly moving bar — only track changes lag.
+  between polls, so even 30s still gives a smoothly moving bar.
+
+  Pressing play, skip or seek polls immediately and then twice more half a second apart,
+  whatever the rate is set to — Spotify keeps reporting the previous track for a moment
+  after a skip, so the first read back is often stale. Without the follow-ups a 30s rate
+  would leave the wrong title on screen for 30s. The burst is capped per press, not
+  accumulated, so holding down skip can't run away with the rate limit. Volume changes
+  skip it, since they don't change what the widget shows.
 - **Widget size** — 50–250% of the 340×104 default. Fonts, art and spacing all scale;
   the widget is rebuilt in place, no restart.
 - **Scroll long titles** — on by default. A title too wide for the widget slides

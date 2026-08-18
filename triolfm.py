@@ -36,6 +36,7 @@ REDIRECT = "http://127.0.0.1:8888/callback"
 SCOPES = "user-read-playback-state user-modify-playback-state"
 POLL = 3.0            # seconds between /me/player reads; overridable in config
 AUTH_TIMEOUT = 300.0  # give up waiting for the OAuth callback after 5 min
+FAST_POLL, FAST_POLLS = 0.5, 2   # re-checks after a control press, see backoff
 SCROLL_MS, HOLD = 60, 12   # marquee: 1px per 60ms, ~0.7s pause at each end
 FADE, FADE_MS = 8, 40      # recolor crossfade: 8 steps of 40ms
 
@@ -362,11 +363,21 @@ def mmss(ms):
     return f"{s // 60}:{s % 60:02d}"
 
 
-def backoff(fails, poll, retry_after=None):
-    """Seconds until the next poll after `fails` consecutive errors."""
+def backoff(fails, poll, retry_after=None, urgent=0):
+    """Seconds until the next poll.
+
+    `urgent` counts the fast re-checks still owed after a control press:
+    /me/player reports the previous track for a moment after a skip, so the
+    poll that a press triggers often reads stale. Following it up twice at
+    FAST_POLL catches the real state whatever the configured rate is —
+    otherwise a 30s rate means the title is wrong for 30s. Errors outrank it;
+    a rate-limited server does not want a burst.
+    """
     if retry_after:
         return float(retry_after)
-    return poll if not fails else min(60.0, poll * 2 ** fails)
+    if fails:
+        return min(60.0, poll * 2 ** fails)
+    return min(poll, FAST_POLL) if urgent else poll
 
 
 def fit(font, text, px):
@@ -403,6 +414,7 @@ class Widget:
         self.poll = float(self.sp.cfg.get("poll", POLL))
         self.msg = "connecting…"
         self.alive = True
+        self.urgent = 0            # fast re-polls owed after a press
         self._declined = False     # user closed the Client ID prompt
         self._shown_fatal = None   # last setup error already shown in a dialog
         self._art_ref = None
@@ -752,6 +764,9 @@ class Widget:
             self.q.put(("err", "offline"))
         except Exception as e:
             self.q.put(("err", str(e)[:40] or type(e).__name__))
+        if not key.startswith("vol"):
+            # a skip or seek changes what the widget shows; volume doesn't
+            self.urgent = FAST_POLLS
         self.wake.set()
 
     def poller(self):
@@ -761,6 +776,9 @@ class Widget:
             try:
                 self.q.put(("state", self.sp.call("GET", "/me/player")))
                 fails = 0
+                wait = backoff(0, self.poll, urgent=self.urgent)
+                if self.urgent:
+                    self.urgent -= 1
             except urllib.error.HTTPError as e:
                 fails += 1
                 self.q.put(("err", f"http {e.code}"))
