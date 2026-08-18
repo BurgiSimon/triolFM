@@ -8,10 +8,11 @@
 # 'sudo apt remove triolfm'.
 set -eu
 
-VERSION=${VERSION:-1.0.0}
-MAINTAINER=${MAINTAINER:-"triolFM <simonburgi09@gmail.com>"}
-
 here=$(cd "$(dirname "$0")" && pwd)
+
+# One source of truth for the version: __version__ in triolfm.py.
+VERSION=${VERSION:-$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$here/triolfm.py")}
+MAINTAINER=${MAINTAINER:-"Simon Burgi <simonburgi09@gmail.com>"}
 stage="$here/build/triolfm_${VERSION}_all"
 deb="$here/triolfm_${VERSION}_all.deb"
 
@@ -67,12 +68,12 @@ EOF
 cat > "$stage/usr/share/doc/triolfm/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: triolFM
+Source: https://github.com/BurgiSimon/triolFM
 
 Files: *
 Copyright: 2026 $MAINTAINER
-License: none
- No licence has been chosen for this package. All rights reserved by the
- copyright holder. It is built for personal use and not for redistribution.
+License: Expat
+$(sed 's/^$/./; s/^/ /' "$here/LICENSE")
 EOF
 chmod 644 "$stage/usr/share/doc/triolfm/copyright"
 

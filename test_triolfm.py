@@ -4,13 +4,20 @@ Stubs tkinter/PIL so this runs headless without the GUI deps installed.
 """
 import base64
 import hashlib
+import json
+import os
+import queue
+import stat
 import sys
+import tempfile
+import threading
 import types
 
-for name in ("tkinter", "tkinter.font", "tkinter.simpledialog", "PIL",
-             "PIL.Image", "PIL.ImageTk"):
+for name in ("tkinter", "tkinter.font", "tkinter.messagebox",
+             "tkinter.simpledialog", "PIL", "PIL.Image", "PIL.ImageTk"):
     sys.modules.setdefault(name, types.ModuleType(name))
 
+import triolfm
 from triolfm import (ACCENT, BG, HOLD, backoff, dominant, elapsed, fit,
                      marquee_step, mix, mmss, parse_body, pkce, shade,
                      theme)
@@ -125,6 +132,160 @@ def test_backoff():
     assert backoff(9, 3.0) == 60.0                # capped, not 25 minutes
     assert backoff(4, 3.0, "7") == 7.0            # Retry-After wins
     assert backoff(4, 3.0, None) == 48.0
+
+
+# Real /me/player payload shapes. apply() is the one function fed arbitrary
+# JSON by a service we don't control, so pin the shapes that differ.
+TRACK = {"is_playing": True, "progress_ms": 1000,
+         "device": {"volume_percent": 33},
+         "item": {"id": "t1", "name": "Song", "duration_ms": 200_000,
+                  "artists": [{"name": "A"}, {"name": "B"}],
+                  "album": {"release_date": "1998-04-01",
+                            "images": [{"url": "big"}, {"url": "small"}]}}}
+# podcasts: no album, so the year and the art hang off the item itself
+EPISODE = {"is_playing": False, "device": None,
+           "item": {"id": "e1", "name": "Ep 1", "duration_ms": 3_600_000,
+                    "artists": [], "release_date": "2024-02-03",
+                    "images": [{"url": "epbig"}, {"url": "epsmall"}]}}
+# local files: no id, no art, no release date
+LOCAL = {"is_playing": True, "progress_ms": 5,
+         "item": {"uri": "spotify:local:x", "name": "Demo", "duration_ms": 0,
+                  "artists": [{"name": "Me"}]}}
+
+
+def fake_widget():
+    """A Widget with just enough state for apply(): no Tk, no network."""
+    w = triolfm.Widget.__new__(triolfm.Widget)
+    w.track = w.art_url = w._vol_job = None
+    w.playing, w.dur, w.pos, w.volume, w.msg = False, 1, 0, 50, "connecting…"
+    w.stamp, w._year, w.info, w._shown = 0.0, "", ("", ""), None
+    w.fetch_art = lambda url: None
+    w._text = lambda: None
+    w.lbl_title = types.SimpleNamespace(config=lambda **kw: None)
+    return w
+
+
+def test_apply_track():
+    w = fake_widget()
+    w.apply(TRACK)
+    assert w.track == "t1" and w.msg is None
+    assert w.info == ("Song", "A, B"), w.info
+    assert w._year == "1998" and w.dur == 200_000 and w.playing
+    assert w.art_url == "small"          # smallest image, not the first
+    assert w.volume == 33
+
+
+def test_apply_episode():
+    w = fake_widget()
+    w.apply(EPISODE)
+    assert w.info == ("Ep 1", "") and w._year == "2024"
+    assert w.art_url == "epsmall"        # art on the item, not on an album
+    assert w.volume == 50                # device: null must not wipe it
+    assert not w.playing and w.pos == 0  # no progress_ms in the payload
+
+
+def test_apply_local_file():
+    w = fake_widget()
+    w.apply(LOCAL)
+    assert w.track == "spotify:local:x"  # no id: fall back to the uri
+    assert w.dur == 1                    # never 0 — the progress bar divides
+    assert w.art_url is None and w._year == ""
+
+
+def test_apply_nothing_playing():
+    for payload in (None, {}, {"item": None}):
+        w = fake_widget()
+        w.apply(payload)
+        assert w.track is None and not w.playing, payload
+        assert w.msg == "nothing playing", payload
+
+
+def test_apply_keeps_pending_volume():
+    w = fake_widget()
+    w._vol_job, w.volume = "pending", 70
+    w.apply(TRACK)
+    assert w.volume == 70  # a scroll we haven't sent yet outranks the poll
+
+
+def test_onscreen():
+    w = triolfm.Widget.__new__(triolfm.Widget)
+    w.W, w.H = 340, 104
+    w.root = types.SimpleNamespace(winfo_screenwidth=lambda: 1920,
+                                   winfo_screenheight=lambda: 1080)
+    assert w.onscreen(100, 100) == (100, 100)      # already visible: untouched
+    assert w.onscreen(5000, 5000) == (1580, 976)   # monitor unplugged
+    assert w.onscreen(-50, -9) == (0, 0)           # off the top-left corner
+
+
+def test_ask_cid_hands_off_to_main_thread():
+    w = triolfm.Widget.__new__(triolfm.Widget)
+    w.q, w._declined = queue.Queue(), False
+    out = []
+
+    def asker():
+        out.append(w.ask_cid())
+
+    t = threading.Thread(target=asker)   # stands in for the poller thread
+    t.start()
+    kind, box = w.q.get(timeout=5)       # what tick() sees on the main thread
+    assert kind == "ask"
+    box.put("ABC")
+    t.join(5)
+    assert out == ["ABC"] and not w._declined
+
+    t = threading.Thread(target=asker)   # this time the user dismisses it
+    t.start()
+    w.q.get(timeout=5)[1].put("")
+    t.join(5)
+    assert w._declined
+    # latched: the poller retries forever, and must not reopen a dialog each time
+    assert w.ask_cid() == "" and w.q.empty()
+
+
+def test_login_without_client_id():
+    # No ID and nothing to ask: a dialog-worthy AuthError, not an input()
+    # prompt at a terminal that a .desktop launch doesn't have.
+    try:
+        triolfm.login({}, lambda: "")
+    except triolfm.AuthError as e:
+        assert triolfm.REDIRECT in str(e), e   # tells them the exact URI
+    else:
+        assert False, "no AuthError"
+
+
+def test_catch_code_port_busy():
+    import socket
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("127.0.0.1", 8888))
+        s.listen(1)
+    except OSError:                     # already busy: the point is proven
+        pass
+    try:
+        triolfm._catch_code("http://example.invalid", "state")
+    except triolfm.AuthError as e:
+        assert "8888" in str(e), e
+    else:
+        assert False, "no AuthError"
+    finally:
+        s.close()
+
+
+def test_save_cfg():
+    keep = triolfm.CFG_PATH
+    try:
+        d = tempfile.mkdtemp()
+        triolfm.CFG_PATH = os.path.join(d, "triolfm", "config.json")
+        triolfm.save_cfg({"refresh": "tok"})       # creates the directory
+        assert json.load(open(triolfm.CFG_PATH)) == {"refresh": "tok"}
+        # the file holds a refresh token: never group- or world-readable
+        assert stat.S_IMODE(os.stat(triolfm.CFG_PATH).st_mode) == 0o600
+        assert not os.path.exists(triolfm.CFG_PATH + ".tmp")  # no litter
+        triolfm.save_cfg({"refresh": "tok2"})      # overwrite in place
+        assert json.load(open(triolfm.CFG_PATH))["refresh"] == "tok2"
+    finally:
+        triolfm.CFG_PATH = keep
 
 
 if __name__ == "__main__":
