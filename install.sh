@@ -50,14 +50,14 @@ if [ "${1:-}" = "--uninstall" ]; then
     exit 0
 fi
 
-python3 -c 'import tkinter, PIL.ImageTk' 2>/dev/null || {
+python3 -c 'import PySide6.QtWidgets, PIL.Image' 2>/dev/null || {
     echo "Missing GUI deps. Run:"
-    echo "  sudo apt install python3-tk python3-pil python3-pil.imagetk"
+    echo "  sudo apt install python3-pyside6.qtwidgets python3-pil"
     exit 1
 }
 
 mkdir -p "$libdir" "$(dirname "$bin")" "$(dirname "$desktop")" "$(dirname "$icon")"
-cp "$here/triolfm.py" "$libdir/"
+cp "$here/triolfm.py" "$here/spotify_backend.py" "$libdir/"
 cp "$here/icon.png" "$icon"
 
 cat > "$bin" <<EOF

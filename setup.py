@@ -10,10 +10,10 @@ import re
 from setuptools import setup
 
 VERSION = re.search(r'^__version__ = "(.*)"',
-                    open("triolfm.py").read(), re.M).group(1)
+                    open("spotify_backend.py").read(), re.M).group(1)
 
 OPTIONS = {
-    "packages": ["PIL"],
+    "packages": ["PIL", "PySide6"],
     "plist": {
         "CFBundleName": "triolFM",
         "CFBundleDisplayName": "triolFM",
@@ -31,7 +31,8 @@ setup(
     name="triolFM",
     version=VERSION,
     app=["triolfm.py"],
+    py_modules=["spotify_backend"],
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],
-    install_requires=["pillow"],
+    install_requires=["pillow", "PySide6"],
 )

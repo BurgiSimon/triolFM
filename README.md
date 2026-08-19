@@ -1,11 +1,13 @@
 # triolFM
 
-A tiny always-on-top Spotify remote. It does **not** play audio and does not replace the
-Spotify desktop app — it drives whatever device your Spotify app is already playing on,
-and shows cover art, track info, elapsed/total time and a progress bar in a borderless
-340×104 widget.
+A Dynamic Island for Spotify. A black pill sits flush against the top edge of your
+screen: idle it shows the cover and a spectrum, a track change makes it peek, and
+hovering springs it open into full transport controls. It does **not** play audio and
+does not replace the Spotify desktop app — it drives whatever device your Spotify app is
+already playing on.
 
-One file, ~900 lines, stdlib only except Pillow (JPEG cover art decoding).
+Two files: `triolfm.py` draws the island (PySide6), `spotify_backend.py` talks to the
+Web API (stdlib plus Pillow for cover art).
 
 ## Install
 
@@ -22,7 +24,7 @@ it in your file manager, or:
 sudo apt install ./triolfm_1.0.0_all.deb
 ```
 
-apt resolves `python3-tk` and `python3-pil.imagetk` itself. triolFM then appears in your
+apt resolves PySide6 and Pillow itself. triolFM then appears in your
 applications menu. Remove it with `sudo apt remove triolfm`.
 
 To build the `.deb` yourself: `./build-deb.sh` (needs only `dpkg-deb`, which Debian and
@@ -31,7 +33,7 @@ Ubuntu already have).
 ### Any other Linux — `install.sh`
 
 ```sh
-sudo apt install python3-tk python3-pil python3-pil.imagetk   # or your distro's names
+sudo apt install python3-pyside6.qtwidgets python3-pil   # or your distro's names
 ./install.sh              # install or upgrade
 ./install.sh --uninstall  # remove
 ```
@@ -51,7 +53,7 @@ into `/usr/share/applications` and `/usr/share/icons` — see
 [Windows Start Menu shortcut](#windows-start-menu-shortcut) for why. Say no and the app
 still installs, it just won't appear in Windows search.
 
-Re-run `./install.sh` after editing `triolfm.py` to push changes to the installed copy.
+Re-run `./install.sh` after editing the sources to push changes to the installed copy.
 
 **`~/.local/bin` sits ahead of `/usr/bin` on PATH**, so a leftover user install shadows a
 packaged one. Run `./install.sh --uninstall` before installing the `.deb`.
@@ -62,9 +64,10 @@ packaged one. Run `./install.sh --uninstall` before installing the `.deb`.
 ./build-app.sh    # builds dist/triolFM.app
 ```
 
-Drag `dist/triolFM.app` into `/Applications`. Needs a Python with Tk — the
-[python.org installer](https://www.python.org/downloads/macos/) ships one, or
-`brew install python-tk`. The script installs `py2app` and `pillow` itself.
+Drag `dist/triolFM.app` into `/Applications`. The script installs `py2app`, `pillow`
+and `PySide6` itself. On a MacBook with a real notch the island sits right under it
+rather than on it — triolFM draws its own pill at the top centre of the primary
+screen.
 
 The bundle is **unsigned**, so the first launch must be **right-click the app → Open →
 Open**. A plain double-click gets refused by Gatekeeper with "cannot be opened because
@@ -77,9 +80,9 @@ if it misbehaves, please open an issue.)*
 
 There is no native Windows build. Run it inside
 [WSL](https://learn.microsoft.com/windows/wsl/install) with the `.deb` or `install.sh`
-above — WSLg draws the widget on the Windows desktop and puts a shortcut in the Start
-Menu. Or run `python3 triolfm.py` directly on Windows Python (tkinter ships with the
-python.org installer; `pip install pillow`).
+above — WSLg draws the island on the Windows desktop and puts a shortcut in the Start
+Menu. Or run `python3 triolfm.py` directly on Windows Python (`pip install pillow
+PySide6`).
 
 ## Connect to Spotify
 
@@ -120,48 +123,47 @@ triolFM shows a dialog explaining what went wrong. The usual causes:
 | "triolFM needs port 8888" | Another program (or a second copy of triolFM) is using it. Close it and try again. |
 | "premium required" | Play/pause/skip need Spotify Premium. Track info and cover art still work. |
 | "no active device" | Start playing something in the Spotify app first — triolFM is a remote, it has nothing to control on its own. |
+| nothing appears at the top of the screen | A `pip`-installed PySide6 also needs `sudo apt install libxcb-cursor0`; the distro package pulls it in itself. |
 
 To start over — wrong Client ID, or you revoked triolFM's access on Spotify's side —
-click **⚙ → Reconnect to Spotify**. That forgets the saved login and asks again. No need
+right-click **→ Reconnect to Spotify**. That forgets the saved login and asks again. No need
 to delete any files.
 
 ## Controls
 
+The island has three states. It idles as a small pill, peeks for a couple of seconds
+when the track changes, and opens fully while the pointer is on it.
+
 | Action | How |
 |---|---|
-| Play / pause, prev, next | the three glyphs |
-| Seek | click the progress bar |
-| Volume | scroll anywhere on the widget |
-| Move | drag anywhere |
-| Settings | the ⚙ icon (or right-click) |
-| Quit | the × icon (or right-click) |
+| Open | move the pointer onto the pill |
+| Play / pause, prev, next | the three glyphs, once open |
+| Seek | drag the progress bar |
+| Volume | scroll anywhere on the island — the bar shows the level for a moment |
+| Settings, quit | right-click |
 
-Window position, refresh rate and size are remembered in the config file. A position
-saved on a monitor you no longer have is clamped back onto the current screen, so the
-widget can't strand itself out of reach.
+The island is not draggable: like the real thing it is pinned to the top centre of the
+primary screen. Refresh rate and the release-year toggle are remembered in the config
+file.
 
 ## Settings
 
-⚙ opens two sliders (applied on release), two toggles, and a reconnect button:
+Right-click the island:
 
-- **Refresh rate** — 1–30s between `/me/player` polls. Default 3s ≈ 20 req/min,
-  comfortably under Spotify's rolling limit. On errors the poll backs off exponentially
-  (capped at 60s, or whatever `Retry-After` asks for) and resumes the moment you touch a
-  control. The progress bar is interpolated locally
-  between polls, so even 30s still gives a smoothly moving bar.
+- **Refresh rate** — 1, 3, 5, 10 or 30s between `/me/player` polls. Default 3s ≈ 20
+  req/min, comfortably under Spotify's rolling limit. On errors the poll backs off
+  exponentially (capped at 60s, or whatever `Retry-After` asks for) and resumes the
+  moment you touch a control. The progress bar is interpolated locally between polls, so
+  even 30s still gives a smoothly moving bar.
 
   Pressing play, skip or seek polls immediately and then twice more half a second apart,
   whatever the rate is set to — Spotify keeps reporting the previous track for a moment
   after a skip, so the first read back is often stale. Without the follow-ups a 30s rate
   would leave the wrong title on screen for 30s. The burst is capped per press, not
   accumulated, so holding down skip can't run away with the rate limit. Volume changes
-  skip it, since they don't change what the widget shows.
-- **Widget size** — 50–250% of the 340×104 default. Fonts, art and spacing all scale;
-  the widget is rebuilt in place, no restart.
-- **Scroll long titles** — on by default. A title too wide for the widget slides
-  back and forth instead of being cut off with an ellipsis. Off restores the ellipsis.
-- **Show release year** — on by default. Appends the album's release year to the
-  artist line (`Some Artist · 1998`).
+  skip it, since they don't change what the island shows.
+- **Show release year** — on by default. Appends the album's release year to the artist
+  line (`Some Artist · 1998`).
 - **Reconnect to Spotify…** — forgets the saved Client ID and login token, then asks
   again on the next poll.
 
@@ -169,9 +171,15 @@ widget can't strand itself out of reach.
 
 - **Spotify Premium is required** for play/pause/skip/seek/volume — a Web API
   restriction, not this app. Free accounts still get live track info and cover art.
-- Status line shows `nothing playing`, `no active device`, `premium required`,
-  `setup needed` or `offline` when something is up.
-- The UI tints itself to the dominant color of the current cover, crossfading over ~0.3s.
+- The title line shows `nothing playing`, `no active device`, `premium required`,
+  `setup needed` or `offline` when something is up. Open the island to read it.
+- The spectrum and the progress fill tint themselves to the dominant color of the
+  current cover, crossfading over ~0.35s.
+- The spectrum is decorative. The Web API exposes no audio levels, so the bars are a
+  smoothed random walk gated on the play state, not the actual signal.
+- On Linux triolFM forces Qt's `xcb` backend: Wayland offers no reliable always-on-top,
+  no input mask and no absolute placement, all three of which the island needs. Set
+  `QT_QPA_PLATFORM` yourself to override.
 - `triolfm --version` prints the version.
 
 ### Windows Start Menu shortcut
@@ -211,30 +219,24 @@ grep -i 'app list\|desktop file' /mnt/wslg/weston.log
 
 ### WSLg specifics
 
-Getting a borderless always-on-top widget under WSLg took three tries, documented here
-so nobody repeats them:
+Frameless windows under WSLg are their own adventure. weston's window manager decorates
+every `_NET_WM_WINDOW_TYPE`, and it never forwards override-redirect X11 windows to the
+Windows desktop at all. Qt's `FramelessWindowHint` goes through `_MOTIF_WM_HINTS`, which
+weston does honour, so the island draws undecorated there — which is also why triolFM
+pins Qt to the `xcb` backend rather than letting it pick Wayland.
 
-- `overrideredirect(True)` — the usual frameless trick — makes the app **invisible**.
-  WSLg never forwards override-redirect X11 windows to the Windows desktop.
-- Every `_NET_WM_WINDOW_TYPE` (dock, splash, notification, …) is still decorated by
-  weston's window manager.
-- What works: `_MOTIF_WM_HINTS` with decorations off, set via `ctypes` against
-  `libX11` while the window is withdrawn. See `_x11_undecorate()`.
-- weston also ignores lone window-move requests, so restoring the saved position walks
-  there in several steps like a drag. See `place()`.
-
-On Windows and macOS the code takes the plain `overrideredirect` path.\n
 ## Development
 
 ```sh
-python3 test_triolfm.py    # no GUI or network needed; stubs tkinter and PIL
+python3 test_triolfm.py    # no network needed; the Island tests need PySide6
 ```
 
-CI runs the same suite on Python 3.9–3.14 (3.9 being the floor the `.deb` declares) with
-a real Pillow installed, and builds the `.deb` on every push.
+Without PySide6 the backend tests still run and the Island tests skip themselves, which
+is how CI runs them on Python 3.9–3.14 (3.9 being the floor the `.deb` declares) with a
+real Pillow installed. The `.deb` is built on every push.
 
-The version lives in one place, `__version__` in `triolfm.py`; `build-deb.sh` and
-`setup.py` both read it from there.
+The version lives in one place, `__version__` in `spotify_backend.py`; `build-deb.sh`
+and `setup.py` both read it from there.
 
 ## License
 

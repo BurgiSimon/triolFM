@@ -4,14 +4,14 @@
 #
 #   sudo apt install ./triolfm_1.0.0_all.deb
 #
-# apt pulls in python3-tk and python3-pil.imagetk for you, and removal is
+# apt pulls in PySide6 and python3-pil for you, and removal is
 # 'sudo apt remove triolfm'.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 
-# One source of truth for the version: __version__ in triolfm.py.
-VERSION=${VERSION:-$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$here/triolfm.py")}
+# One source of truth for the version: __version__ in spotify_backend.py.
+VERSION=${VERSION:-$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$here/spotify_backend.py")}
 MAINTAINER=${MAINTAINER:-"Simon Burgi <simonburgi09@gmail.com>"}
 stage="$here/build/triolfm_${VERSION}_all"
 deb="$here/triolfm_${VERSION}_all.deb"
@@ -25,6 +25,8 @@ mkdir -p "$stage/DEBIAN" \
          "$stage/usr/share/doc/triolfm"
 
 install -m 644 "$here/triolfm.py" "$stage/usr/share/triolfm/triolfm.py"
+install -m 644 "$here/spotify_backend.py" \
+    "$stage/usr/share/triolfm/spotify_backend.py"
 install -m 644 "$here/icon.png" \
     "$stage/usr/share/icons/hicolor/256x256/apps/triolfm.png"
 
@@ -54,12 +56,12 @@ Version: $VERSION
 Section: sound
 Priority: optional
 Architecture: all
-Depends: python3 (>= 3.9), python3-tk, python3-pil, python3-pil.imagetk
+Depends: python3 (>= 3.9), python3-pyside6.qtwidgets, python3-pil
 Maintainer: $MAINTAINER
-Description: Always-on-top Spotify remote widget
- A small borderless widget that shows cover art, track info and a progress
- bar, and drives whatever device the Spotify app is already playing on. It
- does not play audio itself and does not replace the Spotify desktop app.
+Description: Dynamic Island Spotify remote
+ A Dynamic Island pinned to the top edge of the screen: cover art and a
+ spectrum while idle, full transport controls on hover. It drives whatever
+ device the Spotify app is already playing on, and plays no audio itself.
  .
  Controls the Spotify Web API, so playback control needs a Premium account.
  First run walks through a one-time OAuth login in the browser.

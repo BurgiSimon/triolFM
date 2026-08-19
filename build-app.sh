@@ -1,9 +1,8 @@
 #!/bin/sh
 # Build dist/triolFM.app. macOS only — py2app makes bundles, nothing else does.
 #
-# Needs a Python with Tk: the python.org installer ships it, Homebrew needs
-# 'brew install python-tk'. The result is unsigned, so the first launch has to
-# be right-click -> Open (see the README).
+# Needs PySide6, which build-app.sh installs itself. The result is unsigned, so
+# the first launch has to be right-click -> Open (see the README).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -11,11 +10,6 @@ cd "$here"
 
 [ "$(uname)" = "Darwin" ] || {
     echo "macOS only. On Linux use ./install.sh or ./build-deb.sh."
-    exit 1
-}
-python3 -c 'import tkinter' 2>/dev/null || {
-    echo "This Python has no tkinter. Install python.org's build, or:"
-    echo "  brew install python-tk"
     exit 1
 }
 
@@ -31,7 +25,7 @@ done
 iconutil -c icns icon.iconset -o icon.icns
 rm -rf icon.iconset
 
-python3 -m pip install --quiet --upgrade py2app pillow
+python3 -m pip install --quiet --upgrade py2app pillow PySide6
 rm -rf build dist
 python3 setup.py py2app
 
