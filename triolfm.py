@@ -29,10 +29,10 @@ if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
 
 from PySide6.QtCore import (QPointF, QRect, QRectF, Qt, QTimer,
                             QVariantAnimation)
-from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QImage, QPainter,
-                           QPainterPath, QPixmap, QRegion)
+from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QIcon, QImage,
+                           QPainter, QPainterPath, QPixmap, QRegion)
 from PySide6.QtWidgets import (QApplication, QInputDialog, QMenu, QMessageBox,
-                               QWidget)
+                               QSystemTrayIcon, QWidget)
 
 import spotify_backend as be
 from spotify_backend import (FAST_POLLS, AuthError, Spotify, backoff, clamp01,
@@ -149,6 +149,7 @@ class Island(QWidget):
 
         self._sync_mask()
         self._menu = self._build_menu()
+        self.tray = self._build_tray()
 
         threading.Thread(target=self.poller, daemon=True).start()
         self._vol_timer = QTimer(self, singleShot=True, timeout=self._flush_vol)
@@ -468,6 +469,24 @@ class Island(QWidget):
         m.addAction("Reconnect to Spotify…", self.reconnect)
         m.addAction("Quit triolFM", self.quit)
         return m
+
+    def _build_tray(self):
+        """Tray icon carrying the same right-click menu, quit included.
+
+        None where the desktop has no tray — WSLg has none, and there the
+        island's own right-click stays the way out.
+        """
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return None
+        icon = QIcon.fromTheme("triolfm")   # installed under hicolor/…/apps
+        if icon.isNull():                   # running from a checkout
+            icon = QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "icon.png"))
+        tray = QSystemTrayIcon(icon, self)
+        tray.setToolTip("triolFM")
+        tray.setContextMenu(self._menu)
+        tray.show()
+        return tray
 
     def set_rate(self, s):
         self.poll = float(s)

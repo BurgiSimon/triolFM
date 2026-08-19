@@ -140,7 +140,11 @@ when the track changes, and opens fully while the pointer is on it.
 | Play / pause, prev, next | the three glyphs, once open |
 | Seek | drag the progress bar |
 | Volume | scroll anywhere on the island — the bar shows the level for a moment |
-| Settings, quit | right-click |
+| Settings, quit | right-click the island, or right-click the tray icon |
+
+triolFM also puts an icon in the system tray, carrying the same right-click menu. Not
+every desktop has a tray — WSLg has none at all, and there the icon simply never
+appears; the island's own right-click is then the way out.
 
 The island is not draggable: like the real thing it is pinned to the top centre of the
 primary screen. Refresh rate and the release-year toggle are remembered in the config
