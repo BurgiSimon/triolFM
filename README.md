@@ -229,6 +229,13 @@ Windows desktop at all. Qt's `FramelessWindowHint` goes through `_MOTIF_WM_HINTS
 weston does honour, so the island draws undecorated there — which is also why triolFM
 pins Qt to the `xcb` backend rather than letting it pick Wayland.
 
+Placement is the other half. weston cascade-places ordinary managed windows — under WSLg
+it drops them at 32,32 and then ignores every move request afterwards, lone or stepped.
+On a multi-monitor setup that corner can be dead space between screens, so the island
+lands somewhere nothing can reach it. The fix is `WA_X11NetWmWindowTypeDock`: a window
+advertising `_NET_WM_WINDOW_TYPE_DOCK` is placed exactly where it asks, which is what an
+island pinned to the screen edge is anyway.
+
 ## Development
 
 ```sh

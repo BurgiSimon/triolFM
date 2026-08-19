@@ -29,8 +29,9 @@ if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
 
 from PySide6.QtCore import (QPointF, QRect, QRectF, Qt, QTimer,
                             QVariantAnimation)
-from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QIcon, QImage,
-                           QPainter, QPainterPath, QPixmap, QRegion)
+from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QGuiApplication,
+                           QIcon, QImage, QPainter, QPainterPath, QPixmap,
+                           QRegion)
 from PySide6.QtWidgets import (QApplication, QInputDialog, QMenu, QMessageBox,
                                QSystemTrayIcon, QWidget)
 
@@ -126,13 +127,17 @@ class Island(QWidget):
                             | Qt.WindowType.WindowStaysOnTopHint
                             | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # A plain managed window gets cascade-placed: weston under WSLg drops
+        # it at 32,32 and then ignores every move request. A dock is put
+        # exactly where it asks for, which is the whole point of the island.
+        self.setAttribute(Qt.WidgetAttribute.WA_X11NetWmWindowTypeDock)
         self.setMouseTracking(True)
         # The window never moves or resizes; only the pill painted inside it
         # does, so the spring costs no window-manager round trips. Sized for
         # the overshoot, or the rubber-band would be cropped.
         peak_w = CLOSED_W + OVERSHOOT * (OPEN_W - CLOSED_W)
         peak_h = CLOSED_H + OVERSHOOT * (OPEN_H - CLOSED_H)
-        scr = self.screen().geometry()
+        scr = QGuiApplication.primaryScreen().geometry()
         self.win_w = int(peak_w) + 2 * SHOULDER + 4
         self.setGeometry(scr.x() + (scr.width() - self.win_w) // 2, scr.y(),
                          self.win_w, int(peak_h) + 4)

@@ -304,6 +304,24 @@ def test_hover_morphs_open_and_back():
     w.close()
 
 
+def test_pinned_to_primary_screen_top():
+    if triolfm is None:
+        return
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication
+
+    _, w = live_island()
+    scr = QGuiApplication.primaryScreen().geometry()
+    g = w.geometry()
+    assert g.y() == scr.y(), (g, scr)                      # flush to the top
+    assert abs(g.center().x() - scr.center().x()) <= 1, (g, scr)
+    # The dock type is what makes a window manager honour that position.
+    # Without it weston cascade-places the island off in a corner and then
+    # ignores every move request, which reads as "hover does nothing".
+    assert w.testAttribute(Qt.WidgetAttribute.WA_X11NetWmWindowTypeDock)
+    w.close()
+
+
 def test_open_transport_hit_targets():
     if triolfm is None:
         return
