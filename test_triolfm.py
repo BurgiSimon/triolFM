@@ -341,6 +341,28 @@ def test_collapse_keeps_the_band_it_un_masks_for_one_paint():
     w.close()
 
 
+def test_cover_art_cannot_spill_out_of_the_pill():
+    """The art shrinks slower than the pill, so mid-collapse it reaches past
+    the silhouette. Clip it, or it pokes out below as a stray black square."""
+    if triolfm is None:
+        return
+    from PySide6.QtGui import QColor, QPixmap
+
+    app, w = live_island()
+    art = QPixmap(64, 64)
+    art.fill(QColor(255, 255, 255))
+    w.art = art
+    w.cur = w.cur.__class__(0, 0, 183.0, 14.0)   # the spring's undershoot
+    assert w.art_rect().bottom() > w.cur.height(), "art no longer overhangs"
+    img = w.grab().toImage()
+    below = w.cur.height() + 2
+    spill = [(x, y) for y in range(int(below) + 1, img.height())
+             for x in range(img.width())
+             if img.pixelColor(x, y).alpha() >= 200]
+    assert not spill, spill[:8]
+    w.close()
+
+
 def test_pinned_to_primary_screen_top():
     if triolfm is None:
         return

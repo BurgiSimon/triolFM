@@ -285,7 +285,10 @@ class Island(QWidget):
         p.save()
         path = QPainterPath()
         path.addRoundedRect(r, r.width() * 0.24, r.width() * 0.24)
-        p.setClipPath(path)
+        # Intersect, never replace: a bare setClipPath drops the island
+        # silhouette, and the art -- which shrinks slower than the pill --
+        # spills out below it as a stray black square mid-collapse.
+        p.setClipPath(path, Qt.ClipOperation.IntersectClip)
         if self.art:
             p.drawPixmap(r.toRect(), self.art)
         else:
@@ -312,7 +315,8 @@ class Island(QWidget):
         p.setPen(WHITE if self.track else GREY)
         if over and self.openness > 0.6:   # marquee only when there is room
             p.save()
-            p.setClipRect(QRectF(left, top, avail, fm.height() + 2))
+            p.setClipRect(QRectF(left, top, avail, fm.height() + 2),
+                          Qt.ClipOperation.IntersectClip)
             p.drawText(QPointF(left + self._mq[0], top + fm.ascent()), title)
             p.restore()
         else:
