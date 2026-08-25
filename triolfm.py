@@ -49,12 +49,14 @@ SHOULDER = 10                   # concave flare where the pill meets the bezel
 PAD = 18
 CTL_AT = 122                    # pill height at which transport starts fading in
 OVERSHOOT = 1.13                # peak of spring(), sizes the host window
+HALO = 24                       # invisible but hittable ring, see hovered()
 NOTIF_MS = 2600                 # how long a track change stays peeked
 FPS_MS = 33
 
 BLACK = QColor(0, 0, 0)
 WHITE = QColor(255, 255, 255)
 GREY = QColor(155, 155, 155)
+HALO_ALPHA = QColor(0, 0, 0, 1)  # invisible, but not alpha 0, so it is hittable
 
 SIZES = {"closed": (CLOSED_W, CLOSED_H),
          "notif": (NOTIF_W, NOTIF_H),
@@ -134,13 +136,13 @@ class Island(QWidget):
         self.setMouseTracking(True)
         # The window never moves or resizes; only the pill painted inside it
         # does, so the spring costs no window-manager round trips. Sized for
-        # the overshoot, or the rubber-band would be cropped.
+        # the overshoot, or the rubber-band would be cropped, plus the halo.
         peak_w = CLOSED_W + OVERSHOOT * (OPEN_W - CLOSED_W)
         peak_h = CLOSED_H + OVERSHOOT * (OPEN_H - CLOSED_H)
         scr = QGuiApplication.primaryScreen().geometry()
-        self.win_w = int(peak_w) + 2 * SHOULDER + 4
+        self.win_w = int(peak_w) + 2 * SHOULDER + 2 + 2 * HALO
         self.setGeometry(scr.x() + (scr.width() - self.win_w) // 2, scr.y(),
-                         self.win_w, int(peak_h) + 4)
+                         self.win_w, int(peak_h) + 2 + HALO)
 
         # The spring is applied here rather than through QEasingCurve's custom
         # type: handing Qt a Python easing callback segfaults under PySide6.
@@ -195,12 +197,18 @@ class Island(QWidget):
         self._sync_mask()
         self.update()
 
-    def _sync_mask(self):
-        """Input and paint only where the pill is; the rest of the window is
-        click-through, so a plain rect keeps the painted corners antialiased."""
+    def pill_region(self):
+        """The pill and its shoulders: what counts as hovering."""
         w = int(self.cur.width()) + 2 * SHOULDER + 2
-        self.setMask(QRegion(QRect((self.win_w - w) // 2, 0, w,
-                                   int(self.cur.height()) + 2)))
+        return QRect((self.win_w - w) // 2, 0, w, int(self.cur.height()) + 2)
+
+    def _sync_mask(self):
+        """Paint and input only around the pill; the rest of the window is
+        click-through, so a plain rect keeps the painted corners antialiased.
+        Includes the halo, because the mask clips painting and an unpainted
+        halo would be alpha 0, which is exactly what makes it not hittable."""
+        self.setMask(QRegion(
+            self.pill_region().adjusted(-HALO, 0, HALO, HALO)))
 
     def pill(self):
         cx = self.win_w / 2
@@ -242,6 +250,11 @@ class Island(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         x, w, h = self.pill()
         rb = lerp(15, 28, self.openness)
+        # The halo: alpha 1, invisible, and the whole reason the island can
+        # tell it has been left. Painting is already clipped to the mask, so
+        # filling the widget fills exactly the pill plus its HALO ring. See
+        # hovered().
+        p.fillRect(self.rect(), HALO_ALPHA)
         path = island_path(self.win_w / 2, w, h, rb)
         p.fillPath(path, BLACK)
         p.setClipPath(path)   # contents ride the morph instead of spilling out
@@ -392,6 +405,12 @@ class Island(QWidget):
 
     def frame(self):
         t = time.monotonic()
+        if self._seeking is None:          # enter/leave may never arrive
+            if self.hovered():
+                self._notif_at = 0.0
+                self.morph("open")
+            elif self.state == "open":
+                self.morph("closed")
         if self.text_in < 0.99:
             # ponytail: the Web API exposes no audio levels, so the spectrum is
             # a smoothed random walk gated on play state. Swap in a PipeWire
@@ -428,12 +447,37 @@ class Island(QWidget):
     # -- input ------------------------------------------------------------
 
     def enterEvent(self, _):
+        if not self.hovered():             # the halo, not the pill
+            return
         self._notif_at = 0.0
         self.morph("open")
 
     def leaveEvent(self, _):
         if self._seeking is None:
             self.morph("closed")
+
+    def hovered(self):
+        """Is the pointer on the pill? Deliberately the pill and not the mask,
+        so the halo reads as off.
+
+        WSLg hands each surface to Windows as a per-pixel-alpha layered
+        window, and Windows hit-tests those by alpha, ignoring the input
+        region Qt sets. Alpha 0 is not our pointer, so on a sideways exit no
+        leave arrives, no motion event arrives, and QCursor::pos() freezes on
+        the last pixel of the pill -- the island had no way at all to learn it
+        had been left, and hung open. (Downwards happens to send a real leave,
+        which is why only the sides hung.) The halo is one alpha-1 ring around
+        the pill: still invisible, but hittable, so the pointer stays ours for
+        HALO more pixels and frame() gets one honest sample outside the pill.
+
+        ponytail: HALO has to be wider than one motion event or a fast flick
+        jumps the ring and the island hangs open again -- measured steps ran
+        to ~18px, hence 24. The ring is hittable, so it also swallows clicks
+        in those 24px. Shrink it if that bites; raise it if a fast flick ever
+        leaves the island open.
+        """
+        return self.pill_region().contains(
+            self.mapFromGlobal(self.cursor().pos()))
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.RightButton:
@@ -462,7 +506,7 @@ class Island(QWidget):
         if self._seeking is not None:
             self.press("seek", int(self._seeking * self.dur))
             self._seeking = None
-            if not self.rect().contains(self.mapFromGlobal(self.cursor().pos())):
+            if not self.hovered():
                 self.morph("closed")
 
     def wheelEvent(self, e):

@@ -278,7 +278,13 @@ def live_island():
     triolfm.Spotify = FakeSpotify
     triolfm.Island.poller = lambda self: None
     app = QApplication.instance() or QApplication([])
-    return app, triolfm.Island()
+    w = triolfm.Island()
+    # The offscreen platform has no pointer, and frame() closes the island the
+    # moment the pointer is off the pill. Tests that hand it an enterEvent
+    # have to fake the pointer being there too.
+    w.cursor = lambda: types.SimpleNamespace(
+        pos=lambda: w.mapToGlobal(w.mask().boundingRect().center()))
+    return app, w
 
 
 def settle(app, w, seconds=2.0):
@@ -297,6 +303,10 @@ def test_hover_morphs_open_and_back():
     settle(app, w)
     assert w.state == "open" and abs(w.cur.height() - triolfm.OPEN_H) < 0.5
     assert w.ctl_in == 1.0 and w.text_in == 1.0   # everything faded in
+    # frame() polls hover in both directions now, so a leave has to come with
+    # the pointer actually off the pill or the next frame reopens the island
+    away = w.mask().boundingRect().bottomLeft()
+    w.cursor = lambda: types.SimpleNamespace(pos=lambda: w.mapToGlobal(away))
     w.leaveEvent(None)
     settle(app, w)
     assert w.state == "closed" and abs(w.cur.height() - triolfm.CLOSED_H) < 0.5
@@ -418,6 +428,80 @@ def test_save_cfg():
         assert json.load(open(be.CFG_PATH))["refresh"] == "tok2"
     finally:
         be.CFG_PATH = keep
+
+
+def test_open_collapses_when_pointer_left_without_a_leave_event():
+    # X11 drops the odd LeaveNotify when the mask reshapes under the pointer
+    # mid-morph, which left the island stuck open until the next hover.
+    if triolfm is None:
+        return
+    from PySide6.QtCore import QPoint
+
+    app, w = live_island()
+    w.enterEvent(None)
+    settle(app, w)
+    assert w.state == "open"
+    away = QPoint(0, 0)                     # masked out: click-through window
+    w.cursor = lambda: types.SimpleNamespace(pos=lambda: away)
+    w.frame()                               # no leaveEvent ever arrives
+    settle(app, w)
+    assert w.state == "closed" and abs(w.cur.height() - triolfm.CLOSED_H) < 0.5
+    w.close()
+
+
+def test_halo_is_hittable_but_does_not_count_as_hovering():
+    # WSLg hands the surface to Windows as a per-pixel-alpha layered window and
+    # hit-tests it by alpha, so alpha 0 pixels never deliver a pointer event at
+    # all: no leave, no motion, QCursor frozen on the pill's last pixel, island
+    # stuck open on every sideways exit. The halo is an alpha-1 ring that keeps
+    # the pointer ours for a few more pixels. It only works if it is masked in
+    # (or it is not painted, so it is alpha 0 again) AND reads as not-hovered
+    # (or the island just hangs open on the halo instead of on the pill).
+    if triolfm is None:
+        return
+    app, w = live_island()
+    w.enterEvent(None)
+    settle(app, w)
+    assert w.state == "open"
+    pill, mask = w.pill_region(), w.mask().boundingRect()
+    assert mask.left() <= pill.left() - triolfm.HALO, (mask, pill)
+    assert mask.right() >= pill.right() + triolfm.HALO, (mask, pill)
+    assert mask.bottom() >= pill.bottom() + triolfm.HALO, (mask, pill)
+    # a pointer in the halo on any free edge has to read as gone, not hovering
+    from PySide6.QtCore import QPoint
+    for pt in (QPoint(pill.left() - 2, pill.center().y()),
+               QPoint(pill.right() + 2, pill.center().y()),
+               QPoint(pill.center().x(), pill.bottom() + 2)):
+        assert mask.contains(pt), pt          # painted, so alpha 1, so hittable
+        w.cursor = lambda p=pt: types.SimpleNamespace(pos=lambda: w.mapToGlobal(p))
+        assert not w.hovered(), pt            # but off the pill
+    w.frame()
+    settle(app, w)
+    assert w.state == "closed", w.state
+    w.close()
+
+
+def test_halo_is_invisible_but_not_transparent():
+    # alpha 0 would be click-through and would not deliver pointer events;
+    # anything much higher would be a visible grey rim around the island
+    if triolfm is None:
+        return
+    from PySide6.QtGui import QImage
+    app, w = live_island()
+    w.enterEvent(None)
+    settle(app, w)
+    pill = w.pill_region()
+    w.clearMask()          # render() clips to the mask but drops its offset
+    img = QImage(w.size(), QImage.Format.Format_ARGB32)
+    img.fill(0)
+    w.render(img)
+    w._sync_mask()
+    y = pill.center().y()
+    assert img.pixelColor(pill.center().x(), y).alpha() == 255   # the pill
+    for x in (pill.left() - 2, pill.right() + 2, w.width() - 1):
+        assert img.pixelColor(x, y).alpha() == 1, (x, img.pixelColor(x, y))
+    assert img.pixelColor(pill.center().x(), pill.bottom() + 2).alpha() == 1
+    w.close()
 
 
 if __name__ == "__main__":
