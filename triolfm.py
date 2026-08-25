@@ -120,6 +120,7 @@ class Island(QWidget):
         self._bars = [0.2, 0.5, 0.35, 0.7]
         self._notif_at = 0.0
 
+        self._mask = None          # last region handed to setMask(), see _sync_mask
         self.accent = QColor(theme(None)[2])
         self._accent_to = QColor(self.accent)
         self.state = "closed"
@@ -149,6 +150,7 @@ class Island(QWidget):
         self.anim = QVariantAnimation(self, duration=440, startValue=0.0,
                                       endValue=1.0)
         self.anim.valueChanged.connect(self._on_morph)
+        self.anim.finished.connect(self._sync_mask)   # drop the last late band
         self._from = (CLOSED_W, CLOSED_H)
 
         self.fade = QVariantAnimation(self, duration=350)
@@ -206,9 +208,20 @@ class Island(QWidget):
         """Paint and input only around the pill; the rest of the window is
         click-through, so a plain rect keeps the painted corners antialiased.
         Includes the halo, because the mask clips painting and an unpainted
-        halo would be alpha 0, which is exactly what makes it not hittable."""
-        self.setMask(QRegion(
-            self.pill_region().adjusted(-HALO, 0, HALO, HALO)))
+        halo would be alpha 0, which is exactly what makes it not hittable.
+
+        Shrinking a mask is not free. Qt only ever repaints inside the current
+        mask, so pixels the mask drops keep whatever was last painted there,
+        and a compositor that does not re-apply the X shape -- Xwayland, so
+        WSLg -- goes on showing them: the collapse leaves the ghost of every
+        wider pill on screen until the window dies. So the mask shrinks one
+        frame late: it is the union with the frame before, which keeps the
+        doomed band masked in for exactly the one paint that fills it with
+        HALO_ALPHA, and only then lets the shape close over it. anim.finished
+        runs this once more so the last band goes too."""
+        want = QRegion(self.pill_region().adjusted(-HALO, 0, HALO, HALO))
+        self.setMask(want.united(self._mask) if self._mask else want)
+        self._mask = want
 
     def pill(self):
         cx = self.win_w / 2

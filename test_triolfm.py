@@ -314,6 +314,33 @@ def test_hover_morphs_open_and_back():
     w.close()
 
 
+def test_collapse_keeps_the_band_it_un_masks_for_one_paint():
+    """A shrinking mask must lag one frame, or Xwayland keeps showing the
+    pixels the shape just dropped -- ghost pills all over the top bezel."""
+    if triolfm is None:
+        return
+    app, w = live_island()
+    box = lambda: w.mask().boundingRect()
+    w.cur = w.cur.__class__(0, 0, triolfm.OPEN_W, triolfm.OPEN_H)
+    w._sync_mask()
+    grown = box()
+    w.cur = w.cur.__class__(0, 0, triolfm.CLOSED_W, triolfm.CLOSED_H)
+    w._sync_mask()                               # shrink: band still masked in
+    assert box() == grown, (box(), grown)
+    w._sync_mask()                               # and only now does it go
+    assert box().width() < grown.width()
+    # a real morph must not leave that last late band masked in either
+    w.enterEvent(None)
+    settle(app, w)
+    away = w.mask().boundingRect().bottomLeft()
+    w.cursor = lambda: types.SimpleNamespace(pos=lambda: w.mapToGlobal(away))
+    w.leaveEvent(None)
+    settle(app, w)
+    assert box() == w.pill_region().adjusted(-triolfm.HALO, 0,
+                                             triolfm.HALO, triolfm.HALO), box()
+    w.close()
+
+
 def test_pinned_to_primary_screen_top():
     if triolfm is None:
         return
