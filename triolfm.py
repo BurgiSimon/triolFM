@@ -30,8 +30,8 @@ if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
 from PySide6.QtCore import (QPointF, QRect, QRectF, Qt, QTimer,
                             QVariantAnimation)
 from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QGuiApplication,
-                           QIcon, QImage, QPainter, QPainterPath, QPixmap,
-                           QRegion)
+                           QIcon, QImage, QPainter, QPainterPath, QPen,
+                           QPixmap, QRegion)
 from PySide6.QtWidgets import (QApplication, QInputDialog, QMenu, QMessageBox,
                                QSystemTrayIcon, QWidget)
 
@@ -230,6 +230,11 @@ class Island(QWidget):
         x, w, h = self.pill()
         return QRectF(x + PAD, h - 40, w - 2 * PAD, 4)
 
+    def close_rect(self):
+        """Quit cross in the pill's top-right corner (open state only)."""
+        x, w, _ = self.pill()
+        return QRectF(x + w - PAD - 12, 12, 12, 12)
+
     # -- painting ---------------------------------------------------------
 
     def paintEvent(self, _):
@@ -363,6 +368,13 @@ class Island(QWidget):
         elif self.track:
             p.drawText(box, int(Qt.AlignmentFlag.AlignLeft), mmss(self.now()))
             p.drawText(box, int(Qt.AlignmentFlag.AlignRight), mmss(self.dur))
+
+        cr = self.close_rect().adjusted(3, 3, -3, -3)
+        pen = QPen(GREY, 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawLine(cr.topLeft(), cr.bottomRight())
+        p.drawLine(cr.topRight(), cr.bottomLeft())
         p.restore()
 
     @staticmethod
@@ -430,6 +442,9 @@ class Island(QWidget):
         if self.ctl_in < 0.8:
             return
         pt = e.position()
+        if self.close_rect().adjusted(-6, -6, 6, 6).contains(pt):
+            self.quit()
+            return
         for name, c in self.buttons().items():
             if (pt - c).manhattanLength() < 26:
                 self.press(name)

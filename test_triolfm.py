@@ -354,6 +354,26 @@ def test_open_transport_hit_targets():
     w.close()
 
 
+def test_close_button_quits():
+    if triolfm is None:
+        return
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QMouseEvent
+
+    app, w = live_island()
+    w.track, w.dur = "t1", 100_000
+    w.enterEvent(None)
+    settle(app, w)
+    quit_calls = []
+    w.quit = lambda: quit_calls.append(True)
+    w.mousePressEvent(QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, w.close_rect().center(),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier))
+    assert quit_calls
+    w.close()
+
+
 def test_login_without_client_id():
     # No ID and nothing to ask: a dialog-worthy AuthError, not an input()
     # prompt at a terminal that a .desktop launch doesn't have.
