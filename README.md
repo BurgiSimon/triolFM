@@ -6,6 +6,11 @@ hovering springs it open into full transport controls. It does **not** play audi
 does not replace the Spotify desktop app — it drives whatever device your Spotify app is
 already playing on.
 
+<p align="center">
+  <img src="docs/minimized.png" width="300" alt="triolFM idle: a small black pill with the cover and a spectrum"><br><br>
+  <img src="docs/extended.png" width="560" alt="triolFM open: cover, title, artist, transport controls and progress bar">
+</p>
+
 Two files: `triolfm.py` draws the island (PySide6), `spotify_backend.py` talks to the
 Web API (stdlib plus Pillow for cover art).
 
@@ -21,7 +26,7 @@ Download `triolfm_<version>_all.deb` from the
 it in your file manager, or:
 
 ```sh
-sudo apt install ./triolfm_1.0.0_all.deb
+sudo apt install ./triolfm_2.0.0_all.deb
 ```
 
 apt resolves PySide6 and Pillow itself. triolFM then appears in your
@@ -246,8 +251,13 @@ Without PySide6 the backend tests still run and the Island tests skip themselves
 is how CI runs them on Python 3.9–3.14 (3.9 being the floor the `.deb` declares) with a
 real Pillow installed. The `.deb` is built on every push.
 
+[`docs/triolfm-flow.html`](docs/triolfm-flow.html) is a swimlane of one poll cycle — what the island, the poll timer and the Web API each do, and where the config file and the token refresh sit. Open it in a browser.
+
 The version lives in one place, `__version__` in `spotify_backend.py`; `build-deb.sh`
 and `setup.py` both read it from there.
+
+Releases are tagged `vX.Y.Z`; pushing the tag builds the `.deb` and publishes it on the
+[Releases page](https://github.com/BurgiSimon/triolFM/releases). See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
