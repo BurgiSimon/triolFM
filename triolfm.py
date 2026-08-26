@@ -11,6 +11,9 @@ Drawing only. Everything it talks to is in spotify_backend.py.
 import os
 import queue
 import random
+import re
+import struct
+import subprocess
 import sys
 import threading
 import time
@@ -29,9 +32,9 @@ if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
 
 from PySide6.QtCore import (QPointF, QRect, QRectF, Qt, QTimer,
                             QVariantAnimation)
-from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QGuiApplication,
-                           QIcon, QImage, QPainter, QPainterPath, QPen,
-                           QPixmap, QRegion)
+from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetricsF,
+                           QGuiApplication, QIcon, QImage, QImageReader,
+                           QPainter, QPainterPath, QPen, QPixmap, QRegion)
 from PySide6.QtWidgets import (QApplication, QInputDialog, QMenu, QMessageBox,
                                QSystemTrayIcon, QWidget)
 
@@ -85,6 +88,86 @@ def pil_to_pixmap(img):
     data = img.tobytes("raw", "RGBA")
     qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
     return QPixmap.fromImage(qi.copy())  # copy: qi does not own `data`
+
+
+# ------------------------------------------------------------------ cursor
+
+WIN_ARROW = r"C:\Windows\Cursors\aero_arrow.cur"   # the default scheme
+
+
+def cursor_from_cur(path, size):
+    """A Windows .cur read back as a QCursor of `size` px, hotspot kept.
+
+    Qt reads the frames of a .cur but throws the hotspot away, so the two
+    bytes of it are parsed out of the ICONDIRENTRY by hand; frames come out
+    in file order, which is the order of those entries. None if nothing
+    loads: a missing file, or an .ani, which Qt has no reader for.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(6 + 16 * 64)
+    except OSError:
+        return None
+    if len(head) < 22 or struct.unpack_from("<H", head, 2)[0] != 2:
+        return None                       # not a cursor directory
+    n = min(QImageReader(path).imageCount(),
+            struct.unpack_from("<H", head, 4)[0])
+    if n < 1:
+        return None
+    # The smallest frame that still covers the wanted size, else the biggest:
+    # scaling down keeps the edges the artist drew, scaling up would not.
+    sizes = []
+    for i in range(n):
+        r = QImageReader(path)
+        r.jumpToImage(i)
+        sizes.append((r.size().width(), i))
+    fits = [t for t in sizes if t[0] >= size]
+    _, pick = min(fits) if fits else max(sizes)
+    r = QImageReader(path)
+    r.jumpToImage(pick)
+    img = r.read()
+    if img.isNull() or img.width() < 1:
+        return None
+    k = size / img.width()
+    hx, hy = struct.unpack_from("<HH", head, 6 + 16 * pick + 4)
+    img = img.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                     Qt.TransformationMode.SmoothTransformation)
+    return QCursor(QPixmap.fromImage(img), round(hx * k), round(hy * k))
+
+
+def host_cursor():
+    r"""The arrow Windows itself draws, rebuilt as a QCursor -- or None.
+
+    WSLg hands the cursor an X client sets straight to Windows to draw, and X
+    has no way to say "whatever the host would have drawn", so every Qt
+    window swaps the Windows pointer for the Xcursor theme's one the moment
+    it is hovered. The island is a bar on the desktop, not an app window, so
+    that swap reads as a glitch. Fix is to set the very bitmap Windows would
+    have drawn: HKCU\Control Panel\Cursors\Arrow, empty when the default
+    scheme is in use. Off WSL, or if any of it fails, None: keep Qt's own.
+    """
+    if not os.path.isdir("/mnt/wslg"):
+        return None
+    try:
+        keys = r"HKCU\Control Panel\Cursors"
+        out = subprocess.run(["reg.exe", "query", keys], capture_output=True,
+                             text=True, timeout=5).stdout
+        path, size = WIN_ARROW, 32
+        for name, val in re.findall(r"^\s+(\S+)\s+REG_\w+\s*(.*)$", out, re.M):
+            val = val.strip()
+            if name == "Arrow" and val:
+                path = val
+            elif name == "CursorBaseSize" and val:
+                size = int(val, 16)
+        # ponytail: Windows scales the pointer by the display scale factor,
+        # WSLg reports raw pixels, so on a scaled screen this reads small.
+        # TRIOLFM_CURSOR_SIZE is the knob until WSLg exposes the factor.
+        size = int(os.environ.get("TRIOLFM_CURSOR_SIZE", size))
+        unix = subprocess.run(["wslpath", "-u", path], capture_output=True,
+                              text=True, timeout=5).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return cursor_from_cur(unix, size) if unix else None
 
 
 # ------------------------------------------------------------------ island
@@ -754,6 +837,9 @@ class Island(QWidget):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("triolFM")
+    cur = host_cursor()
+    if cur:                 # override, not setCursor: menus and dialogs too
+        app.setOverrideCursor(cur)
     w = Island()
     w.show()
     sys.exit(app.exec())

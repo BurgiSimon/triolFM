@@ -9,6 +9,7 @@ import json
 import os
 import queue
 import stat
+import struct
 import sys
 import tempfile
 import threading
@@ -551,6 +552,53 @@ def test_halo_is_invisible_but_not_transparent():
         assert img.pixelColor(x, y).alpha() == 1, (x, img.pixelColor(x, y))
     assert img.pixelColor(pill.center().x(), pill.bottom() + 2).alpha() == 1
     w.close()
+
+
+def a_cur(size, hot):
+    """A one-frame .cur with a known hotspot, PNG-compressed like Vista+."""
+    from PySide6.QtCore import QBuffer
+    from PySide6.QtGui import QImage
+
+    img = QImage(size, size, QImage.Format.Format_ARGB32)
+    img.fill(0x8000FF00)
+    buf = QBuffer()
+    buf.open(QBuffer.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    png = bytes(buf.data())
+    entry = struct.pack("<BBBBHHII", size, size, 0, 0,
+                        hot[0], hot[1], len(png), 22)
+    return struct.pack("<HHH", 0, 2, 1) + entry + png
+
+
+def test_windows_cursor_keeps_its_hotspot():
+    """WSLg draws whatever cursor the X client sets, so the island sets the
+    Windows arrow bitmap itself. Only worth anything if the hotspot rides
+    along: Qt drops it, and a hotspot stuck at 0,0 lands every click a whole
+    arrow away from where the user aimed."""
+    if triolfm is None:
+        return
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    path = os.path.join(tempfile.mkdtemp(), "arrow.cur")
+    with open(path, "wb") as f:
+        f.write(a_cur(32, (7, 3)))
+
+    c = triolfm.cursor_from_cur(path, 32)
+    assert c.pixmap().width() == 32, c.pixmap().size()
+    assert c.hotSpot() == QPoint(7, 3), c.hotSpot()
+    # Scaled up, the hotspot scales with the arrow or the tip drifts off it.
+    big = triolfm.cursor_from_cur(path, 64)
+    assert big.pixmap().width() == 64, big.pixmap().size()
+    assert big.hotSpot() == QPoint(14, 6), big.hotSpot()
+    # An .ani has no Qt reader and a missing file has nothing: both fall back
+    # to Qt's own cursor instead of blowing up at startup.
+    with open(path[:-4] + ".ani", "wb") as f:
+        f.write(b"RIFF____ACONanih")
+    assert triolfm.cursor_from_cur(path[:-4] + ".ani", 32) is None
+    assert triolfm.cursor_from_cur("/no/such.cur", 32) is None
 
 
 if __name__ == "__main__":
